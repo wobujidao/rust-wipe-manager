@@ -429,7 +429,6 @@ MIT — do whatever you want with this code, just don't blame me if your server 
 
 <div align="center">
 
-**Built for [bzod.ru](https://bzod.ru) — battle-tested in production**
 
 If this saved you time, ⭐ star the repo!
 
