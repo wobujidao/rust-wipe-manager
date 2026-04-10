@@ -1,0 +1,26 @@
+# Real secrets - never commit
+.secrets.env
+secrets.env
+
+# Real config (use config.env.example as template)
+config.env
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# Backups
+*.backup
+*.bak
