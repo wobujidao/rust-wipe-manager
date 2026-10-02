@@ -32,6 +32,9 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 - Player warning via RCON with countdown (configurable, default 30 minutes)
 - Graceful shutdown with fallback to `systemctl stop` if hung
 - Automatic Rust + Oxide updates during restart
+- OS package updates (`unattended-upgrade`) in the same window, while the server is down
+- Reboots the VM instead of starting the server when the OS asks for it (the systemd unit starts Rust on boot)
+- One-time power-off flag (`.poweroff-once`) for host-side maintenance
 - Skips itself on Full Wipe day to avoid conflict
 
 ### 🔥 Automatic Full Wipe on the first Thursday of every month
@@ -39,6 +42,8 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 - **Waits for the actual update to appear in Steam** before wiping (no risk of wiping on old version)
 - Polls Steam every 2 minutes for up to 2 hours
 - Aborts wipe with critical Telegram alert if update doesn't appear in time
+- Manual `fullwipe-now` does **not** wait: it updates if an update is available and wipes either way
+- Fresh random map seed on every Full Wipe (done by LinuxGSM when `seed` is empty, see [Map seed](#-map-seed))
 - Backs up Oxide `Managed/` directory before update
 
 ### 🛡️ systemd integration
@@ -49,12 +54,13 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 
 ### 📱 Telegram notifications at every step
 - Restart started / RCON sent / server stopped / update done / server back up
+- After any VM boot: server is up (with kernel version) or failed to start (`post-boot`)
 - Three log levels: `full` / `success_error` / `error_only`
 - Critical alerts on failures (timeout, update error, server didn't start)
 
 ### 🔐 Security-conscious
 - All secrets stored in a separate `.secrets.env` file with `chmod 600`
-- Sudo restricted to specific `systemctl` commands only
+- Sudo restricted to a short list of commands: `systemctl` for the service, `apt-get update -qq`, `unattended-upgrade`, `reboot`, `poweroff`
 - No credentials in the main script — safe to publish
 
 ## 🏗️ Architecture
@@ -69,6 +75,7 @@ graph TB
             LGSM[🎮 LinuxGSM]
             RUST[🦀 RustDedicated]
             OXIDE[🔧 Oxide/uMod]
+            OS[📦 OS packages]
         end
     end
 
@@ -78,10 +85,12 @@ graph TB
 
     CRON -->|"04:30 daily"| MANAGER
     CRON -->|"19:00 Thursdays"| MANAGER
+    CRON -->|"@reboot: post-boot"| MANAGER
     SYSTEMD -->|"on boot / crash"| LGSM
     MANAGER -->|"start/stop"| SYSTEMD
     MANAGER -->|"RCON commands"| RUST
     MANAGER -->|"check-update"| LGSM
+    MANAGER -->|"unattended-upgrade, reboot"| OS
     MANAGER -->|"alerts"| TG
     LGSM -->|"download updates"| STEAM
     LGSM -->|"manages"| RUST
@@ -122,10 +131,46 @@ sequenceDiagram
         M->>M: ./rustserver update
         M->>M: ./rustserver mods-update
         M->>T: "Updates done"
-        M->>S: systemctl start rustserver
-        S->>R: server starts
-        M->>M: poll for RustDedicated process
-        M->>T: "✅ Restart complete"
+        M->>M: apt-get update + unattended-upgrade
+        M->>T: "OS updates installed"
+        alt .poweroff-once flag exists
+            M->>T: "VM powering off for host maintenance"
+            M->>S: sudo poweroff (the host starts the VM again)
+        else /var/run/reboot-required exists
+            M->>T: "OS update needs a reboot"
+            M->>S: sudo reboot (Rust starts on boot)
+        else Nothing pending
+            M->>S: systemctl start rustserver
+            S->>R: server starts
+            M->>M: poll for RustDedicated process
+            M->>T: "✅ Restart complete"
+        end
+    end
+```
+
+The OS maintenance steps (`update_system`, `reboot_if_required`) run after the Rust/Oxide updates, while the server is down:
+
+- **OS updates** — `apt-get update -qq` + `unattended-upgrade`, controlled by `SYSTEM_UPDATE_ENABLED`. For updates to land only in this window, turn off the stock apt timer (see Installation, step 4).
+- **Reboot** — controlled by `REBOOT_IF_REQUIRED`. If `/var/run/reboot-required` exists, the VM reboots instead of starting the server; the systemd unit starts Rust on boot.
+- **One-time power-off** — `touch ~/rust_server/.poweroff-once` makes the next daily restart power the VM off instead of starting the server (for host-side maintenance, e.g. Proxmox `qm enroll-efi-keys <vmid>`, which needs the VM shut down). The flag is deleted when used, and the host has to start the VM again.
+
+### Post-boot report
+
+```mermaid
+sequenceDiagram
+    participant C as ⏰ cron (@reboot)
+    participant M as 📜 manager.sh
+    participant R as 🦀 Rust Server
+    participant T as 📱 Telegram
+
+    C->>M: trigger "post-boot" mode
+    loop Every 10 seconds (max SERVER_START_TIMEOUT)
+        M->>R: is RustDedicated running?
+    end
+    alt Process found
+        M->>T: "✅ VM booted, server is up (kernel version)"
+    else Timeout
+        M->>T: "❌ VM booted, but the server did not start"
     end
 ```
 
@@ -152,6 +197,7 @@ sequenceDiagram
         M->>M: sleep 600s
         R->>R: server stopped
 
+        Note over M,FP: Manual "fullwipe-now" skips the wait loop<br/>(updates if available, wipes either way)
         loop Every 2 minutes (max 2h)
             M->>FP: check-update (compare builds)
             alt Update available
@@ -176,6 +222,8 @@ sequenceDiagram
     end
 ```
 
+> 💡 The wait loop belongs to the scheduled `fullwipe` (first Thursday). A manual `fullwipe-now` does not wait for Facepunch: it runs `./rustserver update` (which updates only if a new build is out) and then wipes either way.
+
 ## 🛠️ Tech Stack
 
 | Component | Purpose |
@@ -198,7 +246,7 @@ sequenceDiagram
 - **systemd** (built into modern distros)
 - **rcon-cli** by gorcon: [github.com/gorcon/rcon-cli](https://github.com/gorcon/rcon-cli)
 - **Telegram bot** (optional but recommended) — get token from [@BotFather](https://t.me/BotFather)
-- **sudo** rights for the user running the server (limited to `systemctl`)
+- **sudo** rights for the user running the server (limited to `systemctl`, `apt-get update -qq`, `unattended-upgrade`, `reboot`, `poweroff`)
 
 ## 🚀 Installation
 
@@ -252,11 +300,18 @@ sudo systemctl start rustserver
 
 > ⚠️ **Why `Type=oneshot` and not `Type=forking`?** LinuxGSM uses tmux internally and detaches the process. With `Type=forking` systemd loses track of the actual server process. `Type=oneshot` + `RemainAfterExit=yes` is the cleanest solution that works reliably with LGSM.
 
-### 4️⃣ Set up sudoers (passwordless systemctl)
+### 4️⃣ Set up sudoers (passwordless systemctl, apt, reboot)
 
 ```bash
-echo 'YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/systemctl start rustserver, /usr/bin/systemctl stop rustserver, /usr/bin/systemctl restart rustserver' | sudo tee /etc/sudoers.d/YOUR_USERNAME-rustserver
+echo 'YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/systemctl start rustserver, /usr/bin/systemctl stop rustserver, /usr/bin/systemctl restart rustserver, /usr/bin/apt-get update -qq, /usr/bin/unattended-upgrade, /usr/sbin/reboot, /usr/sbin/poweroff' | sudo tee /etc/sudoers.d/YOUR_USERNAME-rustserver
 sudo chmod 440 /etc/sudoers.d/YOUR_USERNAME-rustserver
+```
+
+**Recommended:** disable the stock unattended-upgrade timer so OS upgrades land only in the daily restart window, while the server is down. In `/etc/apt/apt.conf.d/20auto-upgrades` keep the package list refresh and turn off the periodic upgrade:
+
+```
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "0";
 ```
 
 ### 5️⃣ Clone this repo
@@ -306,11 +361,16 @@ crontab -e
 
 Add:
 ```cron
-30 4 * * * /home/YOUR_USERNAME/rust_server/manager.sh restart
-0 19 * * 4 /home/YOUR_USERNAME/rust_server/manager.sh fullwipe
+30 4 * * * /home/YOUR_USERNAME/rust_server/manager.sh restart >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
+0 19 * * 4 /home/YOUR_USERNAME/rust_server/manager.sh fullwipe >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
+@reboot /home/YOUR_USERNAME/rust_server/manager.sh post-boot >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
 ```
 
-> 💡 The Full Wipe task runs **every Thursday** at 19:00, but the script itself checks if today is the first Thursday of the month and exits immediately on other Thursdays.
+> 💡 The Full Wipe task runs **every Thursday** at 19:00, but the script itself checks if today is the first Thursday of the month and exits immediately on other Thursdays. On the first Thursday it sleeps until (`FULLWIPE_LONDON_HOUR` in London time − `FULLWIPE_PRE_WAIT_MINUTES`) and starts preparing then.
+
+> 🕒 Cron times are in the **VM's local timezone**.
+
+> 📣 The `@reboot` entry runs `post-boot` after every VM boot (including the reboots and power cycles triggered by the daily restart) and reports to Telegram whether the server came up.
 
 ## ⚙️ Configuration
 
@@ -324,25 +384,38 @@ All settings live in `config.env`. The most important ones:
 | `FULLWIPE_COUNTDOWN` | `600` | Countdown before Full Wipe stop (seconds) |
 | `FULLWIPE_LONDON_HOUR` | `19` | Hour in London time when Facepunch releases updates |
 | `FULLWIPE_PRE_WAIT_MINUTES` | `30` | Start preparing this many minutes before update |
-| `FULLWIPE_UPDATE_WAIT_MAX` | `7200` | Maximum time to wait for Steam update (seconds) |
+| `FULLWIPE_UPDATE_WAIT_MAX` | `7200` | Maximum time the scheduled `fullwipe` waits for the Steam update (seconds); `fullwipe-now` does not wait |
 | `FULLWIPE_UPDATE_CHECK_INTERVAL` | `120` | Check Steam every N seconds |
 | `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | `true` | Skip daily restart on Full Wipe Thursday |
 | `OXIDE_BACKUP_BEFORE_UPDATE` | `true` | Backup `Managed/` before Oxide update |
-| `SERVER_START_TIMEOUT` | `600` | Max time to wait for RustDedicated process |
+| `SYSTEM_UPDATE_ENABLED` | `true` | Run `apt-get update` + `unattended-upgrade` in the daily restart window (server down) |
+| `REBOOT_IF_REQUIRED` | `true` | If the OS needs a reboot, reboot the VM instead of starting the server |
+| `SERVER_START_TIMEOUT` | `600` | Max time to wait for RustDedicated process (also used by `post-boot`) |
 | `ENABLE_TELEGRAM` | `true` | Enable Telegram notifications |
 | `TELEGRAM_LOG_LEVEL` | `full` | `full` / `success_error` / `error_only` |
+
+### 🌱 Map seed
+
+The manager does not touch the seed itself — LinuxGSM does. If `seed=""` in `lgsm/config-lgsm/rustserver/rustserver.cfg`, LGSM's `full-wipe` writes a new random seed to `lgsm/data/rustserver-seed.txt`, and the next start uses it.
+
+- LGSM only wipes (and rotates the seed) when a `.map`/`.sav` file exists; otherwise it prints "Wipe not required" and the seed stays.
+- A forced Facepunch update alone wipes the map (save version bump) but keeps the same seed, so the terrain repeats. Only an LGSM `full-wipe` changes the seed.
 
 ## 🎮 Commands
 
 ```bash
-# Daily restart (with auto-skip on Full Wipe day)
+# Daily restart (with auto-skip on Full Wipe day), plus OS updates / reboot
 ./manager.sh restart
 
-# Full Wipe (only runs if today is first Thursday)
+# Full Wipe (only runs if today is first Thursday; waits for the Facepunch update)
 ./manager.sh fullwipe
 
-# Manual Full Wipe — bypasses date check (USE WITH CAUTION)
+# Manual Full Wipe — bypasses date check, does not wait for a Facepunch
+# update (updates if one is available, wipes either way) (USE WITH CAUTION)
 ./manager.sh fullwipe-now
+
+# Report the server state after a VM boot (for the @reboot cron entry)
+./manager.sh post-boot
 
 # Test Telegram notifications
 ./manager.sh test-telegram
@@ -351,6 +424,12 @@ All settings live in `config.env`. The most important ones:
 ./manager.sh check-update
 ```
 
+One-time power-off at the next daily restart (host-side maintenance):
+```bash
+touch ~/rust_server/.poweroff-once
+```
+The VM powers off instead of starting the server, the flag is deleted when used, and the host has to start the VM again.
+
 ## 📁 Project structure
 
 ```
@@ -358,8 +437,10 @@ rust_server/
 ├── manager.sh           # Main script
 ├── config.env           # Configuration (paths, timings, flags)
 ├── .secrets.env         # Telegram token, RCON password (chmod 600)
+├── .poweroff-once       # Optional one-time power-off flag (deleted when used)
 └── logs/
-    └── manager-YYYYMMDD.log
+    ├── manager-YYYYMMDD.log
+    └── cron.log
 ```
 
 ## 🔧 Troubleshooting
@@ -378,10 +459,20 @@ The `sudoers.d/` rule wasn't applied correctly. Verify:
 ```bash
 sudo -n systemctl status rustserver
 ```
-Should show status without asking for a password.
+Should show status without asking for a password. `sudo -n -l` lists the allowed commands — it must include `apt-get update -qq`, `unattended-upgrade`, `reboot` and `poweroff` too, otherwise the OS maintenance step fails with an "OS update error" alert.
+
+### `find: Failed to restore initial working directory`
+LinuxGSM's `find` calls fail when the inherited working directory is unreadable — typically when running via `sudo -u YOUR_USERNAME` from another user's home. `manager.sh` now `cd`s into its own directory at startup, so this is fixed for the script. For manual LGSM commands, run them as the server user from its home:
+```bash
+sudo -iu YOUR_USERNAME
+./rustserver details
+```
+
+### VM powered off after the daily restart and did not come back
+That is the `.poweroff-once` flag at work: the VM powers off by design so the host can do maintenance, and the host has to start it again. The flag is deleted when used, so the next daily restart is normal.
 
 ### Full Wipe ran but server is on old version
-The `wait_for_rust_update` loop should prevent this. If it happened anyway:
+The `wait_for_rust_update` loop should prevent this for the scheduled `fullwipe`. A manual `fullwipe-now` does not wait, so it wipes on the old version if Facepunch has not released the update yet. If the scheduled run did it anyway:
 1. Check `~/rust_server/logs/manager-*.log` for the wait phase
 2. Verify `check-update` returns the correct build numbers manually
 3. Increase `FULLWIPE_UPDATE_WAIT_MAX` if Facepunch was extra late
@@ -405,7 +496,7 @@ If nothing arrives, verify:
 
 - [ ] Discord webhook support (alongside Telegram)
 - [ ] Web dashboard for log viewing
-- [ ] Map seed rotation automation
+- [x] Map seed rotation automation — done by LinuxGSM, see [Map seed](#-map-seed)
 - [ ] Integration with `BattleMetrics` API for player count alerts
 - [ ] Plugin update notifications (when popular plugins get updates)
 - [ ] Multi-server support (one manager, multiple servers)
