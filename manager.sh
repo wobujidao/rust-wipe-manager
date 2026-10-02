@@ -7,6 +7,8 @@
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# LGSM's find calls fail if the inherited cwd is unreadable (sudo -u from another home)
+cd "$SCRIPT_DIR" || exit 1
 CONFIG_FILE="$SCRIPT_DIR/config.env"
 SECRETS_FILE="$SCRIPT_DIR/.secrets.env"
 
@@ -249,7 +251,10 @@ mode_fullwipe() {
     fi
     send_telegram "🔥 $SERVER_NAME: FULL WIPE PREPARATION STARTED" "full"
     stop_server_graceful "$FULLWIPE_COUNTDOWN" "FULL_WIPE_UPDATE"
-    if ! wait_for_rust_update "$FULLWIPE_UPDATE_WAIT_MAX" "$FULLWIPE_UPDATE_CHECK_INTERVAL"; then
+    # Manual wipe does not wait for Facepunch: update if one is out, wipe either way
+    if [[ "$force" == "true" ]]; then
+        log "Force mode: not waiting for a Facepunch update"
+    elif ! wait_for_rust_update "$FULLWIPE_UPDATE_WAIT_MAX" "$FULLWIPE_UPDATE_CHECK_INTERVAL"; then
         log "Update wait timeout, aborting Full Wipe"
         exit 1
     fi
