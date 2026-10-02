@@ -12,7 +12,7 @@
 [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://telegram.org/)
 [![Rust Game](https://img.shields.io/badge/Rust-CD412B?style=flat&logo=rust&logoColor=white)](https://rust.facepunch.com/)
 
-**Daily restarts • Smart Full Wipe automation • Update detection • Telegram alerts • Self-healing**
+**Daily restarts • Smart Full Wipe automation • Optional Map Wipes • Watchdog • Update detection • Telegram alerts • Self-healing**
 
 [Features](#-features) • [How it works](#-how-it-works) • [Installation](#-installation) • [Configuration](#-configuration) • [Troubleshooting](#-troubleshooting)
 
@@ -29,16 +29,19 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 ## ✨ Features
 
 ### 🔄 Smart daily restarts
+- Starts at `DAILY_RESTART_TIME` (default 04:30, VM local time) — no separate cron line needed
 - Player warning via RCON with countdown (configurable, default 30 minutes)
 - Graceful shutdown with fallback to `systemctl stop` if hung
 - Automatic Rust + Oxide updates during restart
 - OS package updates (`unattended-upgrade`) in the same window, while the server is down
 - Reboots the VM instead of starting the server when the OS asks for it (the systemd unit starts Rust on boot)
 - One-time power-off flag (`.poweroff-once`) for host-side maintenance
+- Oxide check after every start, with automatic rollback if Oxide did not load
 - Skips itself on Full Wipe day to avoid conflict
 
 ### 🔥 Automatic Full Wipe on the first Thursday of every month
 - Syncs with Facepunch's official patch cadence (19:00 London time)
+- Starts by itself at (London hour − pre-wait) inside a 3-hour window
 - **Waits for the actual update to appear in Steam** before wiping (no risk of wiping on old version)
 - Polls Steam every 2 minutes for up to 2 hours
 - Aborts wipe with critical Telegram alert if update doesn't appear in time
@@ -46,9 +49,30 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 - Fresh random map seed on every Full Wipe (done by LinuxGSM when `seed` is empty, see [Map seed](#-map-seed))
 - Backs up Oxide `Managed/` directory before update
 
+### 🗺️ Optional Map Wipes between the monthly Full Wipes
+- Weekly, every two weeks, ... on a day and time of your choice (`MAPWIPE_*`), off by default
+- Uses LGSM `map-wipe`: map only, blueprints kept, new random seed
+- Never waits for a Facepunch update; the interval is counted from the last wipe of any kind, so it lines up with the forced monthly wipe
+- Skipped on the Full Wipe day
+
+### 🗓️ One cron line, schedule in `config.env`
+- `* * * * * manager.sh tick` reads `config.env` every minute and runs whatever is due: daily restart, Full Wipe, Map Wipe — otherwise the watchdog
+- Change times, days and intervals in `config.env` without touching cron
+- Each event fires once per day inside a window; a VM that was off at that time skips it instead of running hours late
+- Only one run at a time (`flock`): a second manual run is cancelled with a Telegram alert
+
+### 🐕 Watchdog
+- Restarts a crashed server and a hung one (process alive, but RCON silent for several minutes in a row)
+- Respects a clean stop (`./rustserver stop`, `systemctl stop rustserver`) and never restarts it
+- Gives up and alerts once if the server keeps dying (`WATCHDOG_MAX_RESTARTS` per hour)
+
+### 🧩 Oxide safety net
+- After every start (daily restart and wipes) waits for RCON and checks `oxide.version`
+- If Oxide did not load, or the server died while loading: stop, restore `Managed/` from the backup made before this run's Oxide update, start again, alert
+
 ### 🛡️ systemd integration
 - Auto-start on machine boot
-- Auto-restart on crash (via LGSM monitor)
+- Crash and hang recovery by the built-in watchdog (see above)
 - Logs accessible via `journalctl -u rustserver`
 - Clean `start`/`stop`/`restart` interface
 
@@ -56,7 +80,10 @@ The toolkit was built and battle-tested on a real production server (`bzod.ru`) 
 - Restart started / RCON sent / server stopped / update done / server back up
 - After any VM boot: server is up (with kernel version) or failed to start (`post-boot`)
 - Three log levels: `full` / `success_error` / `error_only`
-- Critical alerts on failures (timeout, update error, server didn't start)
+- Messages in English or Russian (`MESSAGES_LANG=en|ru`)
+- Sent as URL-encoded plain text (no Markdown quirks: `+` and `_` arrive intact)
+- The "new wipe is live" message includes the new map seed
+- Critical alerts on failures (timeout, update error, server didn't start, Oxide rollback, watchdog gave up)
 
 ### 🔐 Security-conscious
 - All secrets stored in a separate `.secrets.env` file with `chmod 600`
@@ -76,6 +103,7 @@ graph TB
             RUST[🦀 RustDedicated]
             OXIDE[🔧 Oxide/uMod]
             OS[📦 OS packages]
+            CONF[📄 config.env]
         end
     end
 
@@ -83,13 +111,13 @@ graph TB
     STEAM[☁️ Steam / Facepunch]
     PLAYERS[👥 Players]
 
-    CRON -->|"04:30 daily"| MANAGER
-    CRON -->|"19:00 Thursdays"| MANAGER
+    CRON -->|"every minute: tick"| MANAGER
     CRON -->|"@reboot: post-boot"| MANAGER
+    CONF -.->|"schedule, switches"| MANAGER
     SYSTEMD -->|"on boot / crash"| LGSM
     MANAGER -->|"start/stop"| SYSTEMD
-    MANAGER -->|"RCON commands"| RUST
-    MANAGER -->|"check-update"| LGSM
+    MANAGER -->|"RCON, Oxide check, watchdog"| RUST
+    MANAGER -->|"check-update, map-wipe, full-wipe"| LGSM
     MANAGER -->|"unattended-upgrade, reboot"| OS
     MANAGER -->|"alerts"| TG
     LGSM -->|"download updates"| STEAM
@@ -105,17 +133,41 @@ graph TB
 
 ## 🎯 How it works
 
+### Scheduler (`tick`)
+
+```mermaid
+graph TD
+    TICK["⏰ cron: tick, every minute"] --> LOCK{"another run active?"}
+    LOCK -->|"yes"| EXIT["exit silently"]
+    LOCK -->|"no"| FW{"first Thursday, inside the Full Wipe window?"}
+    FW -->|"yes"| FWRUN["🔥 Full Wipe"]
+    FW -->|"no"| MW{"Map Wipe day, time and interval due?"}
+    MW -->|"yes"| MWRUN["🗺️ Map Wipe"]
+    MW -->|"no"| DR{"daily restart time reached?"}
+    DR -->|"yes"| DRRUN["🔄 Daily restart"]
+    DR -->|"no"| WD["🐕 Watchdog"]
+```
+
+`tick` re-reads `config.env` on every run. Times are the VM's local time.
+
+- **Daily restart** — at `DAILY_RESTART_TIME`.
+- **Full Wipe** — first Thursday, starting at (London `FULLWIPE_LONDON_HOUR` − `FULLWIPE_PRE_WAIT_MINUTES`), inside a 3-hour window.
+- **Map Wipe** — on `MAPWIPE_DAY` (1=Mon … 7=Sun) at `MAPWIPE_TIME`, every `MAPWIPE_INTERVAL_WEEKS`, counted from the last wipe of any kind (the newest `*.map` file's modification time). Skipped on the Full Wipe day.
+- **Once per day, inside a window** — each event fires once per day, inside a window (1 hour for the restart and Map Wipe, 3 hours for the Full Wipe). A VM that was off at that time skips the event instead of running it hours late. The "done" stamps live in `.state/done-*`.
+- **Otherwise** — `tick` runs the watchdog.
+- **Legacy commands** — `restart` runs a daily restart immediately; `fullwipe` is the old cron entry (Full Wipe on the first Thursday only).
+
 ### Daily restart flow
 
 ```mermaid
 sequenceDiagram
-    participant C as ⏰ cron (04:30 MSK)
+    participant C as ⏰ cron tick (04:30 local)
     participant M as 📜 manager.sh
     participant R as 🦀 Rust Server
     participant S as ⚙️ systemd
     participant T as 📱 Telegram
 
-    C->>M: trigger "restart" mode
+    C->>M: tick at DAILY_RESTART_TIME
     M->>M: Is today first Thursday?
     alt Yes (Full Wipe day)
         M->>T: "Skipping daily restart"
@@ -143,6 +195,7 @@ sequenceDiagram
             M->>S: systemctl start rustserver
             S->>R: server starts
             M->>M: poll for RustDedicated process
+            M->>R: wait for RCON, check oxide.version
             M->>T: "✅ Restart complete"
         end
     end
@@ -150,7 +203,7 @@ sequenceDiagram
 
 The OS maintenance steps (`update_system`, `reboot_if_required`) run after the Rust/Oxide updates, while the server is down:
 
-- **OS updates** — `apt-get update -qq` + `unattended-upgrade`, controlled by `SYSTEM_UPDATE_ENABLED`. For updates to land only in this window, turn off the stock apt timer (see Installation, step 4).
+- **OS updates** — `apt-get update -qq` + `unattended-upgrade`, controlled by `SYSTEM_UPDATE_ENABLED`. What gets installed is Ubuntu's own setting (`Unattended-Upgrade::Allowed-Origins` in `/etc/apt/apt.conf.d/50unattended-upgrades`; by default security updates); this window only decides *when*. For updates to land only here, turn off the stock apt timer (see Installation, step 4). The log is `/var/log/unattended-upgrades/unattended-upgrades.log`.
 - **Reboot** — controlled by `REBOOT_IF_REQUIRED`. If `/var/run/reboot-required` exists, the VM reboots instead of starting the server; the systemd unit starts Rust on boot.
 - **One-time power-off** — `touch ~/rust_server/.poweroff-once` makes the next daily restart power the VM off instead of starting the server (for host-side maintenance, e.g. Proxmox `qm enroll-efi-keys <vmid>`, which needs the VM shut down). The flag is deleted when used, and the host has to start the VM again.
 
@@ -178,19 +231,18 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant C as ⏰ cron (Thursdays 19:00)
+    participant C as ⏰ cron tick (every minute)
     participant M as 📜 manager.sh
     participant FP as ☁️ Facepunch/Steam
     participant R as 🦀 Rust Server
     participant T as 📱 Telegram
 
-    C->>M: trigger "fullwipe" mode
-    M->>M: Is today first Thursday?
+    C->>M: tick
+    M->>M: First Thursday and inside the Full Wipe window?
     alt No
-        M-->>C: exit 0
-    else Yes
-        M->>M: Calculate 19:00 London time<br/>(handles BST/GMT auto)
-        M->>M: sleep until T-30min
+        M-->>C: nothing to do
+    else Yes (once per day)
+        M->>M: Window opens 30 min before 19:00 London<br/>(handles BST/GMT auto, 3 h window)
         M->>T: "🔥 Full Wipe preparation started"
         M->>R: RCON "restart 600 FULL_WIPE_UPDATE"
         Note over R: 10-minute countdown
@@ -217,12 +269,74 @@ sequenceDiagram
             M->>R: ./rustserver full-wipe
             Note over R: Map + blueprints<br/>wiped clean
             M->>R: systemctl start rustserver
-            M->>T: "🎉 New wipe is live!"
+            M->>R: wait for RCON, check oxide.version
+            M->>T: "🎉 New wipe is live! (new seed)"
         end
     end
 ```
 
-> 💡 The wait loop belongs to the scheduled `fullwipe` (first Thursday). A manual `fullwipe-now` does not wait for Facepunch: it runs `./rustserver update` (which updates only if a new build is out) and then wipes either way.
+> 💡 The wait loop belongs to the scheduled Full Wipe (first Thursday). A manual `fullwipe-now` and the Map Wipes do not wait for Facepunch: they run `./rustserver update` (which updates only if a new build is out) and then wipe either way.
+
+### Map Wipe
+
+Enabled with `MAPWIPE_ENABLED="true"`. On `MAPWIPE_DAY` at `MAPWIPE_TIME` the countdown (`FULLWIPE_COUNTDOWN`) starts, the server stops, Rust and Oxide are updated if updates are out, then LGSM `map-wipe` runs (blueprints kept, new random seed like `full-wipe`), the server starts, the Oxide check runs and the "new wipe is live" message with the seed is sent. It never waits for a Facepunch update. Run one by hand with `./manager.sh mapwipe-now`.
+
+### Oxide check after every start
+
+```mermaid
+sequenceDiagram
+    participant M as 📜 manager.sh
+    participant R as 🦀 Rust Server
+    participant T as 📱 Telegram
+
+    M->>R: start server
+    loop up to OXIDE_LOAD_TIMEOUT
+        M->>R: RCON serverinfo
+    end
+    alt RCON answers and oxide.version is OK
+        M->>T: success message
+    else RCON never answers
+        M->>T: "RCON silent, Oxide not checked"
+    else Process died, or Oxide not loaded
+        M->>T: "Oxide did not load, rolling back"
+        M->>R: stop, restore Managed/ from the backup, start
+        M->>T: "Rolled back, server is running"
+    end
+```
+
+- Controlled by `OXIDE_CHECK_ENABLED`. The backup is the `Managed.backup-<date>` copy made right before this run's Oxide update, so there is nothing to roll back to when the run did not update Oxide (you get an alert instead).
+- ⚠️ If Rust itself was updated in the same run, that copy is vanilla (no Oxide): the server runs without plugins until uMod ships a fix.
+- `OXIDE_LOAD_TIMEOUT` must cover map generation after a wipe — it can take 10+ minutes on slow hardware.
+
+### Watchdog
+
+```mermaid
+graph TD
+    W["🐕 Watchdog (inside tick)"] --> B{"booted less than 10 min ago, or starting.lock exists?"}
+    B -->|"yes"| SKIP["skip"]
+    B -->|"no"| L{"started.lock exists?"}
+    L -->|"no, clean stop"| NEVER["never restarted"]
+    L -->|"yes"| P{"RustDedicated running?"}
+    P -->|"no"| CR["💥 crashed"]
+    P -->|"yes"| H{"older than WATCHDOG_GRACE and RCON silent WATCHDOG_HANG_CHECKS minutes in a row?"}
+    H -->|"yes"| HU["🧊 hung"]
+    H -->|"no"| OK["healthy"]
+    CR --> LIM{"under WATCHDOG_MAX_RESTARTS per hour?"}
+    HU --> LIM
+    LIM -->|"yes"| RS["restart and alert"]
+    LIM -->|"no"| GU["give up, alert once"]
+```
+
+- Runs inside `tick` every minute (or by hand: `./manager.sh watchdog`).
+- A **crashed** server is one with no `RustDedicated` process while LGSM's `lgsm/lock/rustserver-started.lock` exists. A **hung** one has a process older than `WATCHDOG_GRACE` whose RCON `serverinfo` stays silent `WATCHDOG_HANG_CHECKS` minutes in a row.
+- A clean stop (`./rustserver stop` or `systemctl stop rustserver`) removes `started.lock`, so the server is never restarted. A console/RCON `quit` leaves it, so the watchdog restarts the server — see Troubleshooting.
+- It skips the first 10 minutes after boot (`post-boot` covers that) and any time LGSM's `starting.lock` exists.
+- After `WATCHDOG_MAX_RESTARTS` restarts within an hour it gives up and alerts once; `.state/gave_up` is cleared when the server is healthy again.
+
+### One run at a time, and logs
+
+- `manager.sh` takes a `flock` on `.manager.lock`. A second manual or cron run is cancelled with a Telegram alert; `tick` and `watchdog` exit silently when busy. LGSM and rcon run with file descriptor 9 closed, so the lock never leaks into tmux.
+- `manager-*.log` files older than `LOG_KEEP_DAYS` are deleted; `cron.log` is rotated to `cron.log.1` at 10 MB.
 
 ## 🛠️ Tech Stack
 
@@ -361,58 +475,112 @@ crontab -e
 
 Add:
 ```cron
-30 4 * * * /home/YOUR_USERNAME/rust_server/manager.sh restart >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
-0 19 * * 4 /home/YOUR_USERNAME/rust_server/manager.sh fullwipe >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
+* * * * * /home/YOUR_USERNAME/rust_server/manager.sh tick >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
 @reboot /home/YOUR_USERNAME/rust_server/manager.sh post-boot >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
 ```
 
-> 💡 The Full Wipe task runs **every Thursday** at 19:00, but the script itself checks if today is the first Thursday of the month and exits immediately on other Thursdays. On the first Thursday it sleeps until (`FULLWIPE_LONDON_HOUR` in London time − `FULLWIPE_PRE_WAIT_MINUTES`) and starts preparing then.
+> 💡 `tick` runs every minute, reads `config.env` and starts whatever is due: the daily restart at `DAILY_RESTART_TIME`, the Full Wipe on the first Thursday from (London `FULLWIPE_LONDON_HOUR` − `FULLWIPE_PRE_WAIT_MINUTES`), the optional Map Wipe. When nothing is due it runs the watchdog. See [Scheduler](#scheduler-tick) for the details.
 
-> 🕒 Cron times are in the **VM's local timezone**.
+> 🕒 All times are in the **VM's local timezone**. An event that was missed because the VM was off is skipped, not run hours late.
 
 > 📣 The `@reboot` entry runs `post-boot` after every VM boot (including the reboots and power cycles triggered by the daily restart) and reports to Telegram whether the server came up.
 
+#### Upgrading from the old cron lines
+
+Older versions used one cron line per job (`... manager.sh restart` at 04:30 and `... manager.sh fullwipe` on Thursdays at 19:00). Remove both and add the `tick` line above, otherwise two runs fire at the same time and the lock cancels one of them with a Telegram alert. Then:
+
+- Copy the new options from `config.env.example` to your `config.env`. An older `config.env` keeps working: missing options get defaults (daily restart at 04:30, Map Wipe off, OS updates and reboot off, Oxide check and watchdog on).
+- If your `config.env` still has `OXIDE_LOAD_TIMEOUT=300`, raise it (the new default is `900`) so it covers map generation after a wipe.
+- `fullwipe` still works as a legacy command (first Thursday only) and `restart` still runs a daily restart right away.
+
 ## ⚙️ Configuration
 
-All settings live in `config.env`. The most important ones:
+All settings live in `config.env`. [`config.env.example`](config.env.example) documents every setting inline, with a comment above each parameter. The most important ones:
 
 | Parameter | Default | Description |
 |---|---|---|
+| `DAILY_RESTART_ENABLED` | `true` | Enable the daily restart |
+| `DAILY_RESTART_TIME` | `04:30` | Daily restart time (VM local time) |
 | `DAILY_RESTART_COUNTDOWN` | `1800` | Countdown before daily restart (seconds) |
 | `DAILY_RESTART_UPDATE_RUST` | `true` | Update Rust during daily restart |
 | `DAILY_RESTART_UPDATE_OXIDE` | `true` | Update Oxide during daily restart |
-| `FULLWIPE_COUNTDOWN` | `600` | Countdown before Full Wipe stop (seconds) |
+| `FULLWIPE_ENABLED` | `true` | Enable the Full Wipe |
+| `FULLWIPE_COUNTDOWN` | `600` | Countdown before Full Wipe / Map Wipe stop (seconds) |
 | `FULLWIPE_LONDON_HOUR` | `19` | Hour in London time when Facepunch releases updates |
 | `FULLWIPE_PRE_WAIT_MINUTES` | `30` | Start preparing this many minutes before update |
-| `FULLWIPE_UPDATE_WAIT_MAX` | `7200` | Maximum time the scheduled `fullwipe` waits for the Steam update (seconds); `fullwipe-now` does not wait |
+| `FULLWIPE_UPDATE_WAIT_MAX` | `7200` | Maximum time the scheduled Full Wipe waits for the Steam update (seconds); `fullwipe-now` and Map Wipes do not wait |
 | `FULLWIPE_UPDATE_CHECK_INTERVAL` | `120` | Check Steam every N seconds |
+| `MAPWIPE_ENABLED` | `false` | Enable scheduled Map Wipes (map only, blueprints kept) |
+| `MAPWIPE_DAY` | `5` | Day of week: 1=Mon … 7=Sun |
+| `MAPWIPE_TIME` | `19:00` | Start time (VM local time); the countdown starts then |
+| `MAPWIPE_INTERVAL_WEEKS` | `1` | 1 = every week, 2 = every two weeks, ...; counted from the last wipe of any kind |
 | `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | `true` | Skip daily restart on Full Wipe Thursday |
 | `OXIDE_BACKUP_BEFORE_UPDATE` | `true` | Backup `Managed/` before Oxide update |
+| `OXIDE_CHECK_ENABLED` | `true` | After a start: check `oxide.version`, roll `Managed/` back if Oxide is broken |
+| `OXIDE_LOAD_TIMEOUT` | `900` | Max wait for RCON after a start (seconds); must cover map generation after a wipe |
 | `SYSTEM_UPDATE_ENABLED` | `true` | Run `apt-get update` + `unattended-upgrade` in the daily restart window (server down) |
 | `REBOOT_IF_REQUIRED` | `true` | If the OS needs a reboot, reboot the VM instead of starting the server |
 | `SERVER_START_TIMEOUT` | `600` | Max time to wait for RustDedicated process (also used by `post-boot`) |
+| `WATCHDOG_ENABLED` | `true` | Restart a crashed or hung server (a clean stop is respected) |
+| `WATCHDOG_GRACE` | `1800` | Don't call a server hung until its process is this old (seconds) |
+| `WATCHDOG_HANG_CHECKS` | `5` | RCON silent this many minutes in a row = hung |
+| `WATCHDOG_MAX_RESTARTS` | `3` | Per hour; beyond that the watchdog gives up and alerts |
 | `ENABLE_TELEGRAM` | `true` | Enable Telegram notifications |
 | `TELEGRAM_LOG_LEVEL` | `full` | `full` / `success_error` / `error_only` |
+| `MESSAGES_LANG` | `en` | Language of Telegram messages: `en` / `ru` |
+| `LOG_KEEP_DAYS` | `30` | Delete `manager-*.log` older than this |
+
+### 🗺️ Map Wipe schedule
+
+Map Wipes are off by default. Examples:
+
+```env
+# Every Friday at 19:00
+MAPWIPE_ENABLED="true"
+MAPWIPE_DAY=5
+MAPWIPE_TIME="19:00"
+MAPWIPE_INTERVAL_WEEKS=1
+```
+
+```env
+# Every two weeks on Monday at 18:00
+MAPWIPE_ENABLED="true"
+MAPWIPE_DAY=1
+MAPWIPE_TIME="18:00"
+MAPWIPE_INTERVAL_WEEKS=2
+```
+
+The interval is counted from the last wipe of any kind (the newest `*.map` file), so a forced monthly Full Wipe resets it. The Full Wipe stays on the first Thursday, because Facepunch's forced update sets that day. A Map Wipe is skipped on the Full Wipe day.
 
 ### 🌱 Map seed
 
-The manager does not touch the seed itself — LinuxGSM does. If `seed=""` in `lgsm/config-lgsm/rustserver/rustserver.cfg`, LGSM's `full-wipe` writes a new random seed to `lgsm/data/rustserver-seed.txt`, and the next start uses it.
+The manager does not touch the seed itself — LinuxGSM does. If `seed=""` in `lgsm/config-lgsm/rustserver/rustserver.cfg`, LGSM's `full-wipe` (and `map-wipe`) writes a new random seed to `lgsm/data/rustserver-seed.txt`, and the next start uses it.
 
 - LGSM only wipes (and rotates the seed) when a `.map`/`.sav` file exists; otherwise it prints "Wipe not required" and the seed stays.
-- A forced Facepunch update alone wipes the map (save version bump) but keeps the same seed, so the terrain repeats. Only an LGSM `full-wipe` changes the seed.
+- A forced Facepunch update alone wipes the map (save version bump) but keeps the same seed, so the terrain repeats. Only an LGSM `full-wipe` or `map-wipe` changes the seed. The "new wipe is live" Telegram message shows the new seed.
 
 ## 🎮 Commands
 
 ```bash
-# Daily restart (with auto-skip on Full Wipe day), plus OS updates / reboot
+# Cron every minute: runs what config.env schedules for now, otherwise the watchdog
+./manager.sh tick
+
+# Daily restart right now (auto-skips on Full Wipe day), plus OS updates / reboot
 ./manager.sh restart
 
-# Full Wipe (only runs if today is first Thursday; waits for the Facepunch update)
+# Legacy cron entry: Full Wipe, only runs if today is first Thursday
+# (waits for the Facepunch update)
 ./manager.sh fullwipe
 
 # Manual Full Wipe — bypasses date check, does not wait for a Facepunch
 # update (updates if one is available, wipes either way) (USE WITH CAUTION)
 ./manager.sh fullwipe-now
+
+# Manual Map Wipe — map only, blueprints kept, no date check, no update wait
+./manager.sh mapwipe-now
+
+# Restart a crashed or hung server (tick already does this every minute)
+./manager.sh watchdog
 
 # Report the server state after a VM boot (for the @reboot cron entry)
 ./manager.sh post-boot
@@ -437,10 +605,13 @@ rust_server/
 ├── manager.sh           # Main script
 ├── config.env           # Configuration (paths, timings, flags)
 ├── .secrets.env         # Telegram token, RCON password (chmod 600)
+├── .manager.lock        # flock: one run at a time
 ├── .poweroff-once       # Optional one-time power-off flag (deleted when used)
+├── .state/              # done-* stamps (event already ran today), hang, restarts, gave_up
 └── logs/
-    ├── manager-YYYYMMDD.log
-    └── cron.log
+    ├── manager-YYYYMMDD.log   # deleted after LOG_KEEP_DAYS
+    ├── cron.log
+    └── cron.log.1             # cron.log rotated at 10 MB
 ```
 
 ## 🔧 Troubleshooting
@@ -478,9 +649,24 @@ The `wait_for_rust_update` loop should prevent this for the scheduled `fullwipe`
 3. Increase `FULLWIPE_UPDATE_WAIT_MAX` if Facepunch was extra late
 
 ### Oxide won't load after Full Wipe
-Oxide releases sometimes lag behind Rust releases by 30-90 minutes. If `mods-update` ran too early, you may have an incompatible version. Solutions:
+The Oxide check after the start normally catches this: it rolls `Managed/` back to the pre-update copy and alerts. Keep in mind that if Rust itself was updated in the same run, that copy has no Oxide, so the server runs without plugins until uMod ships a fix. Oxide releases sometimes lag behind Rust releases by 30-90 minutes. If `mods-update` ran too early, you may have an incompatible version. Solutions:
 - Wait 30 minutes and run `~/rustserver mods-update` manually, then restart
 - Restore from auto-backup: `~/serverfiles/RustDedicated_Data/Managed.backup-YYYY-MM-DD/`
+
+### The server came back after I stopped it
+The watchdog restarts a server that has no process while LGSM's `lgsm/lock/rustserver-started.lock` exists. A clean stop (`./rustserver stop` or `systemctl stop rustserver`) removes that lock, so the server stays down. A console or RCON `quit` leaves the lock in place, and the watchdog treats it as a crash. To keep the server down, stop it via LGSM or systemd — or set `WATCHDOG_ENABLED="false"`. If your LGSM lives elsewhere, set `LGSM_LOCK_DIR` / `LGSM_SELFNAME` in `config.env`.
+
+### Telegram: "Server keeps crashing ... Watchdog stopped"
+The watchdog restarted the server `WATCHDOG_MAX_RESTARTS` times within an hour and gave up (alerting once). Find the cause in the server logs; once the server is healthy again `.state/gave_up` is cleared by itself.
+
+### Telegram: "manager.sh is already running, second run cancelled"
+Only one run at a time is allowed (`.manager.lock`). A wipe or restart is still in progress, so your manual run was cancelled. `tick` and `watchdog` exit silently in that case.
+
+### Telegram: "RCON has not answered ... Oxide not checked"
+After the start, RCON stayed silent for `OXIDE_LOAD_TIMEOUT`. Map generation after a wipe can take 10+ minutes on slow hardware: raise `OXIDE_LOAD_TIMEOUT`.
+
+### The daily restart or wipe did not run
+Each event fires once per day inside a window (1 h for the restart and Map Wipe, 3 h for the Full Wipe). If the VM was off at that time, the event is skipped, not run hours late. Check `~/rust_server/logs/manager-*.log` and `cron.log`, and make sure the `tick` cron line is present.
 
 ### Telegram messages not arriving
 ```bash
@@ -496,7 +682,6 @@ If nothing arrives, verify:
 
 - [ ] Discord webhook support (alongside Telegram)
 - [ ] Web dashboard for log viewing
-- [x] Map seed rotation automation — done by LinuxGSM, see [Map seed](#-map-seed)
 - [ ] Integration with `BattleMetrics` API for player count alerts
 - [ ] Plugin update notifications (when popular plugins get updates)
 - [ ] Multi-server support (one manager, multiple servers)
