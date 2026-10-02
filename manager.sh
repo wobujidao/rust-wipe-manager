@@ -17,7 +17,28 @@ SECRETS_FILE="$SCRIPT_DIR/.secrets.env"
 source "$CONFIG_FILE"
 source "$SECRETS_FILE"
 
-mkdir -p "$LOG_DIR"
+# Defaults for settings added after the first release, so an older config.env keeps working
+: "${MESSAGES_LANG:=en}"
+: "${SYSTEM_UPDATE_ENABLED:=false}"
+: "${REBOOT_IF_REQUIRED:=false}"
+: "${DAILY_RESTART_TIME:=04:30}"
+: "${MAPWIPE_ENABLED:=false}"
+: "${MAPWIPE_DAY:=5}"
+: "${MAPWIPE_TIME:=19:00}"
+: "${MAPWIPE_INTERVAL_WEEKS:=1}"
+: "${OXIDE_CHECK_ENABLED:=true}"
+: "${OXIDE_LOAD_TIMEOUT:=900}"
+: "${WATCHDOG_ENABLED:=true}"
+: "${WATCHDOG_GRACE:=1800}"
+: "${WATCHDOG_HANG_CHECKS:=5}"
+: "${WATCHDOG_MAX_RESTARTS:=3}"
+: "${LOG_KEEP_DAYS:=30}"
+: "${LGSM_LOCK_DIR:=$(dirname "$LGSM_SCRIPT")/lgsm/lock}"
+: "${LGSM_SELFNAME:=$(basename "$LGSM_SCRIPT")}"
+
+LOCK_FILE="$SCRIPT_DIR/.manager.lock"
+STATE_DIR="$SCRIPT_DIR/.state"
+mkdir -p "$LOG_DIR" "$STATE_DIR"
 LOG_FILE="$LOG_DIR/manager-$(date +%Y%m%d).log"
 
 log() {
@@ -26,14 +47,101 @@ log() {
     echo "$msg" >> "$LOG_FILE"
 }
 
-check_telegram_api() {
-    local response
-    response=$(curl -s --connect-timeout 5 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" 2>&1)
-    if [[ $? -ne 0 || "$response" =~ "error_code" || ! "$response" =~ "\"ok\":true" ]]; then
-        log "Telegram API error: $response"
-        return 1
+# ----------------------------------------------------------------------------
+# Telegram texts. Local variables of the caller (countdown, reason, ...) are
+# visible here through bash dynamic scoping.
+# ----------------------------------------------------------------------------
+msg() {
+    local key="$1"
+    if [[ "$MESSAGES_LANG" == "ru" ]]; then
+        case "$key" in
+            already_stopped)   echo "ℹ️ $SERVER_TAG: сервер уже остановлен" ;;
+            rcon_sent)         echo "📡 $SERVER_TAG: команда рестарта отправлена (отсчёт $((countdown/60)) мин, причина: $reason)" ;;
+            rcon_error)        echo "❌ $SERVER_TAG: не удалось отправить RCON-команду" ;;
+            server_stopped)    echo "🛑 $SERVER_TAG: сервер остановлен" ;;
+            force_stop)        echo "⚠️ $SERVER_TAG: сервер не остановился сам, останавливаю принудительно" ;;
+            start_timeout)     echo "❌ $SERVER_TAG: сервер не запустился за $((SERVER_START_TIMEOUT/60)) мин" ;;
+            waiting_update)    echo "⏳ $SERVER_TAG: жду обновление Rust от Facepunch..." ;;
+            update_detected)   echo "🎉 $SERVER_TAG: обновление Rust вышло (ждал $((elapsed/60)) мин)" ;;
+            update_timeout)    echo "🚨 $SERVER_TAG: обновление Rust не вышло за $((max_wait/60)) мин. Вайп отменён, нужен человек!" ;;
+            rust_updated)      echo "✅ $SERVER_TAG: Rust обновлён" ;;
+            rust_update_error) echo "❌ $SERVER_TAG: ошибка обновления Rust" ;;
+            oxide_updated)     echo "✅ $SERVER_TAG: Oxide обновлён" ;;
+            oxide_update_error) echo "❌ $SERVER_TAG: ошибка обновления Oxide" ;;
+            os_updated)        echo "✅ $SERVER_TAG: обновления системы установлены" ;;
+            os_update_error)   echo "❌ $SERVER_TAG: ошибка обновления системы" ;;
+            poweroff_once)     echo "⏻ $SERVER_TAG: VM выключается для обслуживания хоста, хост включит её сам" ;;
+            rebooting)         echo "🔁 $SERVER_TAG: системе нужна перезагрузка, перезагружаю VM (сервер стартует при загрузке)" ;;
+            booted_ok)         echo "✅ $SERVER_TAG: VM загрузилась, сервер запущен (ядро $(uname -r))" ;;
+            booted_fail)       echo "❌ $SERVER_TAG: VM загрузилась, но сервер не запустился за $((SERVER_START_TIMEOUT/60)) мин" ;;
+            restart_skip)      echo "ℹ️ $SERVER_TAG: сегодня полный вайп, ежедневный рестарт пропускаю" ;;
+            restart_started)   echo "🛠 $SERVER_NAME: ежедневный рестарт (отсчёт $((DAILY_RESTART_COUNTDOWN/60)) мин)" ;;
+            restart_done)      echo "✅ $SERVER_TAG: ежедневный рестарт завершён" ;;
+            wipe_today)        echo "🕐 $SERVER_TAG: сегодня $wipe_name. Подготовка через $((sleep_for/60)) мин" ;;
+            wipe_prep)         echo "🔥 $SERVER_NAME: начинаю $wipe_name" ;;
+            wipe_abort_update) echo "🚨 $SERVER_TAG: Rust не обновился, $wipe_name отменён" ;;
+            wipe_running)      echo "🗑 $SERVER_TAG: $wipe_name ($wipe_what)" ;;
+            wipe_done)         echo "✅ $SERVER_TAG: $wipe_name выполнен" ;;
+            wipe_error)        echo "❌ $SERVER_TAG: ошибка: $wipe_name не выполнен" ;;
+            wipe_live)         echo "🎉 $SERVER_NAME: НОВЫЙ ВАЙП! Сервер обновлён и запущен (seed $(current_seed))" ;;
+            not_ready)         echo "⚠️ $SERVER_TAG: сервер запущен, но RCON не отвечает уже $((OXIDE_LOAD_TIMEOUT/60)) мин. Oxide не проверен" ;;
+            oxide_rollback)    echo "⚠️ $SERVER_TAG: Oxide не загрузился ($why). Откатываю Managed/ на копию до обновления Oxide" ;;
+            oxide_rolled_back) echo "✅ $SERVER_TAG: откат сделан, сервер запущен. Если обновлялся сам Rust, копия без Oxide: плагины не работают до выхода исправления uMod" ;;
+            oxide_rollback_fail) echo "🚨 $SERVER_TAG: откат Oxide не помог, нужен человек!" ;;
+            oxide_no_backup)   echo "🚨 $SERVER_TAG: Oxide не загрузился ($why), а копии Managed/ нет. Нужен человек!" ;;
+            wd_crashed)        echo "💥 $SERVER_TAG: сервер упал, перезапускаю" ;;
+            wd_hung)           echo "🧊 $SERVER_TAG: сервер завис (RCON молчит $WATCHDOG_HANG_CHECKS проверки подряд), перезапускаю" ;;
+            wd_restarted)      echo "✅ $SERVER_TAG: сервер перезапущен сторожем" ;;
+            wd_restart_fail)   echo "❌ $SERVER_TAG: сторож не смог запустить сервер" ;;
+            wd_give_up)        echo "🚨 $SERVER_TAG: сервер падает слишком часто ($WATCHDOG_MAX_RESTARTS перезапуска за час). Сторож остановился, нужен человек!" ;;
+            busy)              echo "⚠️ $SERVER_TAG: manager.sh уже работает, второй запуск ($MODE) отменён" ;;
+            test)              echo "🧪 $SERVER_TAG: проверка уведомлений Telegram" ;;
+        esac
+    else
+        case "$key" in
+            already_stopped)   echo "ℹ️ $SERVER_TAG: Server already stopped" ;;
+            rcon_sent)         echo "📡 $SERVER_TAG: RCON sent (countdown $((countdown/60)) min, reason: $reason)" ;;
+            rcon_error)        echo "❌ $SERVER_TAG: RCON send error" ;;
+            server_stopped)    echo "🛑 $SERVER_TAG: Server stopped" ;;
+            force_stop)        echo "⚠️ $SERVER_TAG: Force stop" ;;
+            start_timeout)     echo "❌ $SERVER_TAG: Server did not start in $((SERVER_START_TIMEOUT/60)) min" ;;
+            waiting_update)    echo "⏳ $SERVER_TAG: Waiting for Rust update from Facepunch..." ;;
+            update_detected)   echo "🎉 $SERVER_TAG: Rust update detected after $((elapsed/60)) min wait" ;;
+            update_timeout)    echo "🚨 $SERVER_TAG: TIMEOUT! Rust update did not appear in $((max_wait/60)) min. Manual intervention required!" ;;
+            rust_updated)      echo "✅ $SERVER_TAG: Rust updated" ;;
+            rust_update_error) echo "❌ $SERVER_TAG: Rust update error" ;;
+            oxide_updated)     echo "✅ $SERVER_TAG: Oxide updated" ;;
+            oxide_update_error) echo "❌ $SERVER_TAG: Oxide update error" ;;
+            os_updated)        echo "✅ $SERVER_TAG: OS updates installed" ;;
+            os_update_error)   echo "❌ $SERVER_TAG: OS update error" ;;
+            poweroff_once)     echo "⏻ $SERVER_TAG: VM powering off for host maintenance, the host will start it again" ;;
+            rebooting)         echo "🔁 $SERVER_TAG: OS update needs a reboot, rebooting VM (server starts on boot)" ;;
+            booted_ok)         echo "✅ $SERVER_TAG: VM booted, server is up (kernel $(uname -r))" ;;
+            booted_fail)       echo "❌ $SERVER_TAG: VM booted, but the server did not start in $((SERVER_START_TIMEOUT/60)) min" ;;
+            restart_skip)      echo "ℹ️ $SERVER_TAG: Skipping daily restart, today is Full Wipe day" ;;
+            restart_started)   echo "🛠 $SERVER_NAME: Daily restart started (countdown $((DAILY_RESTART_COUNTDOWN/60)) min)" ;;
+            restart_done)      echo "✅ $SERVER_TAG: Daily restart completed successfully" ;;
+            wipe_today)        echo "🕐 $SERVER_TAG: $wipe_name today. Preparation in $((sleep_for/60)) min" ;;
+            wipe_prep)         echo "🔥 $SERVER_NAME: $wipe_name PREPARATION STARTED" ;;
+            wipe_abort_update) echo "🚨 $SERVER_TAG: Rust update failed, aborting $wipe_name" ;;
+            wipe_running)      echo "🗑 $SERVER_TAG: Performing $wipe_name ($wipe_what)" ;;
+            wipe_done)         echo "✅ $SERVER_TAG: $wipe_name completed" ;;
+            wipe_error)        echo "❌ $SERVER_TAG: $wipe_name error" ;;
+            wipe_live)         echo "🎉 $SERVER_NAME: NEW WIPE IS LIVE! Server updated and ready (seed $(current_seed))" ;;
+            not_ready)         echo "⚠️ $SERVER_TAG: Server started, but RCON has not answered for $((OXIDE_LOAD_TIMEOUT/60)) min. Oxide not checked" ;;
+            oxide_rollback)    echo "⚠️ $SERVER_TAG: Oxide did not load ($why). Rolling Managed/ back to the copy taken before the Oxide update" ;;
+            oxide_rolled_back) echo "✅ $SERVER_TAG: Rolled back, server is running. If Rust itself was updated, that copy has no Oxide: plugins are off until uMod ships a fix" ;;
+            oxide_rollback_fail) echo "🚨 $SERVER_TAG: Oxide rollback did not help. Manual intervention required!" ;;
+            oxide_no_backup)   echo "🚨 $SERVER_TAG: Oxide did not load ($why) and there is no Managed/ backup. Manual intervention required!" ;;
+            wd_crashed)        echo "💥 $SERVER_TAG: Server crashed, restarting" ;;
+            wd_hung)           echo "🧊 $SERVER_TAG: Server hung (RCON silent for $WATCHDOG_HANG_CHECKS checks in a row), restarting" ;;
+            wd_restarted)      echo "✅ $SERVER_TAG: Server restarted by the watchdog" ;;
+            wd_restart_fail)   echo "❌ $SERVER_TAG: Watchdog could not start the server" ;;
+            wd_give_up)        echo "🚨 $SERVER_TAG: Server keeps crashing ($WATCHDOG_MAX_RESTARTS restarts within an hour). Watchdog stopped, manual intervention required!" ;;
+            busy)              echo "⚠️ $SERVER_TAG: manager.sh is already running, second run ($MODE) cancelled" ;;
+            test)              echo "🧪 $SERVER_TAG: Telegram notification test" ;;
+        esac
     fi
-    return 0
 }
 
 send_telegram() {
@@ -47,18 +155,44 @@ send_telegram() {
         "success_error") [[ "$level" == "success" || "$level" == "error" ]] || return 0 ;;
         "error_only") [[ "$level" == "error" ]] || return 0 ;;
     esac
-    check_telegram_api || return 1
+    # Plain text, URL-encoded: a raw "+" would arrive as a space, "_" would break Markdown
     local response
-    response=$(curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -d chat_id="$TELEGRAM_CHAT_ID" -d text="$message" -d parse_mode="Markdown" 2>&1)
-    if [[ $? -ne 0 || "$response" =~ "error_code" ]]; then
+    response=$(curl -s --max-time 15 -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+        --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" --data-urlencode "text=$message" 2>&1)
+    if [[ $? -ne 0 || ! "$response" =~ \"ok\":true ]]; then
         log "Telegram send error: $response"
         return 1
     fi
     return 0
 }
 
+# Only one maintenance run at a time. LGSM and rcon are started with fd 9 closed
+# (see lgsm/rcon_command), so the lock dies with this process, not with tmux.
+acquire_lock() {
+    local quiet="${1:-}"
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        [[ "$quiet" == "quiet" ]] && exit 0
+        log "Another manager.sh run holds the lock, exiting ($MODE)"
+        send_telegram "$(msg busy)" "error"
+        exit 1
+    fi
+}
+
+lgsm() {
+    "$LGSM_SCRIPT" "$@" 9>&-
+}
+
+cleanup_logs() {
+    find "$LOG_DIR" -maxdepth 1 -name 'manager-*.log' -mtime +"$LOG_KEEP_DAYS" -delete 2>/dev/null
+    local cron_log="$LOG_DIR/cron.log"
+    if [ -f "$cron_log" ] && [ "$(stat -c %s "$cron_log")" -gt 10485760 ]; then
+        mv -f "$cron_log" "$cron_log.1"
+    fi
+}
+
 is_server_running() {
-    ps aux | grep -v grep | grep -q "RustDedicated"
+    pgrep -x RustDedicated >/dev/null
 }
 
 is_first_thursday() {
@@ -67,13 +201,17 @@ is_first_thursday() {
     [[ "$dow" == "4" && "$day" -ge 1 && "$day" -le 7 ]]
 }
 
+current_seed() {
+    cat "$(dirname "$LGSM_SCRIPT")/lgsm/data/$LGSM_SELFNAME-seed.txt" 2>/dev/null || echo "?"
+}
+
 rcon_command() {
     local cmd="$1"
     if [ ! -x "$RCON_CLI" ]; then
         log "ERROR: rcon-cli not found: $RCON_CLI"
         return 1
     fi
-    "$RCON_CLI" -a "$RCON_HOST:$RCON_PORT" -p "$RCON_PASS" -t web -T 30s "$cmd"
+    "$RCON_CLI" -a "$RCON_HOST:$RCON_PORT" -p "$RCON_PASS" -t web -T 30s "$cmd" 9>&-
 }
 
 stop_server_graceful() {
@@ -81,14 +219,14 @@ stop_server_graceful() {
     local reason="$2"
     if ! is_server_running; then
         log "Server already stopped"
-        send_telegram "ℹ️ $SERVER_TAG: Server already stopped" "full"
+        send_telegram "$(msg already_stopped)" "full"
         return 0
     fi
     log "Sending RCON restart $countdown ($reason)..."
     if rcon_command "restart $countdown $reason"; then
-        send_telegram "📡 $SERVER_TAG: RCON sent (countdown $((countdown/60)) min, reason: $reason)" "full"
+        send_telegram "$(msg rcon_sent)" "full"
     else
-        send_telegram "❌ $SERVER_TAG: RCON send error" "error"
+        send_telegram "$(msg rcon_error)" "error"
     fi
     log "Waiting for server to stop ($((countdown/60)) min)..."
     sleep "$countdown"
@@ -96,14 +234,14 @@ stop_server_graceful() {
     for ((i=1; i<=18; i++)); do
         if ! is_server_running; then
             log "Server stopped"
-            send_telegram "🛑 $SERVER_TAG: Server stopped" "full"
+            send_telegram "$(msg server_stopped)" "full"
             return 0
         fi
         log "Server still running, attempt $i/18..."
         sleep 10
     done
     log "Force stop via systemd..."
-    send_telegram "⚠️ $SERVER_TAG: Force stop" "full"
+    send_telegram "$(msg force_stop)" "full"
     sudo systemctl stop rustserver
     sleep 30
     return 0
@@ -126,14 +264,15 @@ start_server() {
         log "Waiting for start, attempt $i/$checks..."
     done
     log "ERROR: Server did not start in $((SERVER_START_TIMEOUT/60)) min"
-    send_telegram "❌ $SERVER_TAG: Server did not start in $((SERVER_START_TIMEOUT/60)) min" "error"
+    send_telegram "$(msg start_timeout)" "error"
     return 1
 }
 
 check_rust_update_available() {
-    local local_build remote_build
-    local_build=$("$LGSM_SCRIPT" check-update 2>&1 | grep "Local build:" | awk '{print $NF}')
-    remote_build=$("$LGSM_SCRIPT" check-update 2>&1 | grep "Remote build:" | awk '{print $NF}')
+    local out local_build remote_build
+    out=$(lgsm check-update 2>&1)
+    local_build=$(grep "Local build:" <<< "$out" | awk '{print $NF}')
+    remote_build=$(grep "Remote build:" <<< "$out" | awk '{print $NF}')
     if [ -z "$local_build" ] || [ -z "$remote_build" ]; then
         log "Cannot get versions (Local=$local_build Remote=$remote_build)"
         return 2
@@ -150,11 +289,11 @@ wait_for_rust_update() {
     local interval="$2"
     local elapsed=0
     log "Waiting for Rust update (max $((max_wait/60)) min, check every $((interval/60)) min)..."
-    send_telegram "⏳ $SERVER_TAG: Waiting for Rust update from Facepunch..." "full"
+    send_telegram "$(msg waiting_update)" "full"
     while [ "$elapsed" -lt "$max_wait" ]; do
         if check_rust_update_available; then
             log "Update detected after $((elapsed/60)) min"
-            send_telegram "🎉 $SERVER_TAG: Rust update detected after $((elapsed/60)) min wait" "full"
+            send_telegram "$(msg update_detected)" "full"
             return 0
         fi
         log "No update yet, waiting $((interval/60)) min (elapsed $((elapsed/60)) min)..."
@@ -162,20 +301,22 @@ wait_for_rust_update() {
         elapsed=$((elapsed + interval))
     done
     log "TIMEOUT: Rust update did not appear in $((max_wait/60)) min"
-    send_telegram "🚨 $SERVER_TAG: TIMEOUT! Rust update did not appear in $((max_wait/60)) min. Manual intervention required!" "error"
+    send_telegram "$(msg update_timeout)" "error"
     return 1
 }
 
 update_rust() {
     log "Updating Rust..."
-    if "$LGSM_SCRIPT" update; then
-        send_telegram "✅ $SERVER_TAG: Rust updated" "full"
+    if lgsm update; then
+        send_telegram "$(msg rust_updated)" "full"
         return 0
     else
-        send_telegram "❌ $SERVER_TAG: Rust update error" "error"
+        send_telegram "$(msg rust_update_error)" "error"
         return 1
     fi
 }
+
+OXIDE_BACKUP=""
 
 backup_oxide() {
     [[ "$OXIDE_BACKUP_BEFORE_UPDATE" != "true" ]] && return 0
@@ -184,7 +325,7 @@ backup_oxide() {
     if [ -d "$managed_dir" ]; then
         log "Backup Oxide: $managed_dir -> $backup_dir"
         rm -rf "$backup_dir"
-        cp -r "$managed_dir" "$backup_dir"
+        cp -r "$managed_dir" "$backup_dir" && OXIDE_BACKUP="$backup_dir"
         find "$SERVERFILES_DIR/RustDedicated_Data/" -maxdepth 1 -name "Managed.backup-*" -type d -mtime +30 -exec rm -rf {} \; 2>/dev/null
     fi
 }
@@ -192,22 +333,77 @@ backup_oxide() {
 update_oxide() {
     backup_oxide
     log "Updating Oxide..."
-    if "$LGSM_SCRIPT" mods-update; then
-        send_telegram "✅ $SERVER_TAG: Oxide updated" "full"
+    if lgsm mods-update; then
+        send_telegram "$(msg oxide_updated)" "full"
         return 0
     else
-        send_telegram "❌ $SERVER_TAG: Oxide update error" "error"
+        send_telegram "$(msg oxide_update_error)" "error"
         return 1
     fi
+}
+
+# Wait until RCON answers. Returns 1 on timeout, 2 if the process died meanwhile.
+wait_for_rcon() {
+    local waited=0
+    log "Waiting for RCON (up to $((OXIDE_LOAD_TIMEOUT/60)) min)..."
+    until rcon_command serverinfo >/dev/null 2>&1; do
+        is_server_running || { log "Server process died while loading"; return 2; }
+        (( waited >= OXIDE_LOAD_TIMEOUT )) && { log "RCON timeout"; return 1; }
+        sleep 15
+        waited=$((waited + 15))
+    done
+    log "RCON answers after ~$((waited/60)) min"
+    return 0
+}
+
+oxide_loaded() {
+    rcon_command "oxide.version" 2>/dev/null | grep -q "Oxide"
+}
+
+# After a start: make sure the server came up with Oxide; if not, roll Managed/
+# back to the copy taken before the Oxide update and start again.
+check_oxide_after_start() {
+    [[ "$OXIDE_CHECK_ENABLED" != "true" ]] && return 0
+    local why rc
+    wait_for_rcon; rc=$?
+    if [ "$rc" -eq 1 ]; then
+        send_telegram "$(msg not_ready)" "error"
+        return 1
+    elif [ "$rc" -eq 2 ]; then
+        why="server crashed while loading"
+    elif oxide_loaded; then
+        log "Oxide loaded: $(rcon_command oxide.version 2>/dev/null | head -1)"
+        return 0
+    else
+        why="oxide.version did not answer"
+    fi
+    [[ "$MESSAGES_LANG" == "ru" && "$rc" -eq 2 ]] && why="сервер упал при загрузке"
+    [[ "$MESSAGES_LANG" == "ru" && "$rc" -eq 0 ]] && why="oxide.version не отвечает"
+    log "Oxide check failed: $why"
+    if [ -z "$OXIDE_BACKUP" ] || [ ! -d "$OXIDE_BACKUP" ]; then
+        send_telegram "$(msg oxide_no_backup)" "error"
+        return 1
+    fi
+    send_telegram "$(msg oxide_rollback)" "error"
+    sudo systemctl stop rustserver
+    sleep 5
+    local managed_dir="$SERVERFILES_DIR/RustDedicated_Data/Managed"
+    rm -rf "$managed_dir" && cp -r "$OXIDE_BACKUP" "$managed_dir"
+    if start_server && wait_for_rcon; then
+        send_telegram "$(msg oxide_rolled_back)" "error"
+        return 0
+    fi
+    send_telegram "$(msg oxide_rollback_fail)" "error"
+    return 1
 }
 
 update_system() {
     [[ "$SYSTEM_UPDATE_ENABLED" != "true" ]] && return 0
     log "Updating OS packages (unattended-upgrade)..."
     if sudo /usr/bin/apt-get update -qq && sudo /usr/bin/unattended-upgrade; then
-        send_telegram "✅ $SERVER_TAG: OS updates installed" "full"
+        send_telegram "$(msg os_updated)" "full"
     else
-        send_telegram "❌ $SERVER_TAG: OS update error" "error"
+        send_telegram "$(msg os_update_error)" "error"
     fi
 }
 
@@ -217,14 +413,14 @@ reboot_if_required() {
     if [ -f "$SCRIPT_DIR/.poweroff-once" ]; then
         rm -f "$SCRIPT_DIR/.poweroff-once"
         log "Power-off flag found, powering the VM off for host maintenance"
-        send_telegram "⏻ $SERVER_TAG: VM powering off for host maintenance, the host will start it again" "full"
+        send_telegram "$(msg poweroff_once)" "full"
         sudo /usr/sbin/poweroff
         exit 0
     fi
     [[ "$REBOOT_IF_REQUIRED" != "true" ]] && return 0
     [ -f /var/run/reboot-required ] || return 0
     log "OS requires a reboot ($(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)), rebooting instead of starting"
-    send_telegram "🔁 $SERVER_TAG: OS update needs a reboot, rebooting VM (server starts on boot)" "full"
+    send_telegram "$(msg rebooting)" "full"
     sudo /usr/sbin/reboot
     exit 0
 }
@@ -236,11 +432,11 @@ mode_post_boot() {
         sleep 10
         if is_server_running; then
             log "Server is running after boot (kernel $(uname -r))"
-            send_telegram "✅ $SERVER_TAG: VM booted, server is up (kernel $(uname -r))" "success"
+            send_telegram "$(msg booted_ok)" "success"
             return 0
         fi
     done
-    send_telegram "❌ $SERVER_TAG: VM booted, but the server did not start in $((SERVER_START_TIMEOUT/60)) min" "error"
+    send_telegram "$(msg booted_fail)" "error"
     exit 1
 }
 
@@ -251,33 +447,42 @@ mode_restart() {
     fi
     if [[ "$SKIP_DAILY_RESTART_ON_FULLWIPE_DAY" == "true" ]] && is_first_thursday; then
         log "Today is Full Wipe day, skipping daily restart"
-        send_telegram "ℹ️ $SERVER_TAG: Skipping daily restart — today is Full Wipe day" "full"
+        send_telegram "$(msg restart_skip)" "full"
         exit 0
     fi
-    send_telegram "🛠 $SERVER_NAME: Daily restart started (countdown $((DAILY_RESTART_COUNTDOWN/60)) min)" "full"
+    send_telegram "$(msg restart_started)" "full"
     stop_server_graceful "$DAILY_RESTART_COUNTDOWN" "server_restart"
     [[ "$DAILY_RESTART_UPDATE_RUST" == "true" ]] && update_rust
     [[ "$DAILY_RESTART_UPDATE_OXIDE" == "true" ]] && update_oxide
     update_system
     reboot_if_required
     if start_server; then
-        send_telegram "✅ $SERVER_TAG: Daily restart completed successfully" "success"
+        check_oxide_after_start
+        send_telegram "$(msg restart_done)" "success"
     else
         exit 1
     fi
 }
 
-mode_fullwipe() {
-    local force="${1:-false}"
-    if [[ "$FULLWIPE_ENABLED" != "true" ]]; then
-        log "Full Wipe disabled in config"
-        exit 0
+# kind: full (map + blueprints, waits for the Facepunch update unless forced)
+#       map  (map only, never waits for an update)
+# force: start now instead of sleeping until the London hour
+mode_wipe() {
+    local kind="$1"
+    local force="${2:-false}"
+    local wipe_name wipe_what lgsm_cmd
+    if [[ "$kind" == "full" ]]; then
+        lgsm_cmd="full-wipe"
+        if [[ "$MESSAGES_LANG" == "ru" ]]; then wipe_name="полный вайп"; wipe_what="карта + чертежи"
+        else wipe_name="Full Wipe"; wipe_what="map + blueprints"; fi
+    else
+        lgsm_cmd="map-wipe"
+        if [[ "$MESSAGES_LANG" == "ru" ]]; then wipe_name="вайп карты"; wipe_what="только карта, чертежи остаются"
+        else wipe_name="Map Wipe"; wipe_what="map only, blueprints kept"; fi
     fi
-    if [[ "$force" != "true" ]]; then
-        if ! is_first_thursday; then
-            log "Not first Thursday, exit"
-            exit 0
-        fi
+    if [[ "$kind" == "full" && "$FULLWIPE_ENABLED" != "true" ]]; then
+        log "Full Wipe disabled in config (FULLWIPE_ENABLED)"
+        exit 0
     fi
     local target_unix
     target_unix=$(TZ=Europe/London date -d "today $FULLWIPE_LONDON_HOUR:00:00" +%s)
@@ -285,60 +490,202 @@ mode_fullwipe() {
     local pre_wait_seconds=$((FULLWIPE_PRE_WAIT_MINUTES * 60))
     local start_at=$((target_unix - pre_wait_seconds))
     local sleep_for=$((start_at - now_unix))
-    log "Full Wipe time (London $FULLWIPE_LONDON_HOUR:00) = $(date -d @$target_unix '+%Y-%m-%d %H:%M:%S %Z')"
-    log "Will start preparation at = $(date -d @$start_at '+%Y-%m-%d %H:%M:%S %Z')"
+    log "$kind wipe time (London $FULLWIPE_LONDON_HOUR:00) = $(date -d @$target_unix '+%Y-%m-%d %H:%M:%S %Z')"
     if [ "$force" != "true" ] && [ "$sleep_for" -gt 0 ]; then
         log "Sleeping $((sleep_for/60)) min until preparation start..."
-        send_telegram "🕐 $SERVER_TAG: Full Wipe today. Preparation in $((sleep_for/60)) min" "full"
+        send_telegram "$(msg wipe_today)" "full"
         sleep "$sleep_for"
     else
         log "Time already passed or force mode, starting immediately"
     fi
-    send_telegram "🔥 $SERVER_NAME: FULL WIPE PREPARATION STARTED" "full"
-    stop_server_graceful "$FULLWIPE_COUNTDOWN" "FULL_WIPE_UPDATE"
-    # Manual wipe does not wait for Facepunch: update if one is out, wipe either way
-    if [[ "$force" == "true" ]]; then
-        log "Force mode: not waiting for a Facepunch update"
-    elif ! wait_for_rust_update "$FULLWIPE_UPDATE_WAIT_MAX" "$FULLWIPE_UPDATE_CHECK_INTERVAL"; then
-        log "Update wait timeout, aborting Full Wipe"
-        exit 1
+    send_telegram "$(msg wipe_prep)" "full"
+    stop_server_graceful "$FULLWIPE_COUNTDOWN" "WIPE"
+    # Only the scheduled full wipe waits for Facepunch; manual and map wipes update if one is out
+    if [[ "$kind" == "full" && "$force" != "true" ]]; then
+        if ! wait_for_rust_update "$FULLWIPE_UPDATE_WAIT_MAX" "$FULLWIPE_UPDATE_CHECK_INTERVAL"; then
+            log "Update wait timeout, aborting wipe"
+            exit 1
+        fi
+    else
+        log "Not waiting for a Facepunch update"
     fi
     if ! update_rust; then
-        send_telegram "🚨 $SERVER_TAG: Rust update failed, aborting Full Wipe" "error"
+        send_telegram "$(msg wipe_abort_update)" "error"
         exit 1
     fi
     update_oxide
-    log "Performing Full Wipe (LGSM full-wipe)..."
-    send_telegram "🗑 $SERVER_TAG: Performing Full Wipe (map + blueprints)" "full"
-    if "$LGSM_SCRIPT" full-wipe; then
-        send_telegram "✅ $SERVER_TAG: Full Wipe completed" "full"
+    log "Performing $kind wipe (LGSM $lgsm_cmd)..."
+    send_telegram "$(msg wipe_running)" "full"
+    if lgsm "$lgsm_cmd"; then
+        send_telegram "$(msg wipe_done)" "full"
     else
-        send_telegram "❌ $SERVER_TAG: Full Wipe error" "error"
+        send_telegram "$(msg wipe_error)" "error"
         exit 1
     fi
     if start_server; then
-        send_telegram "🎉 $SERVER_NAME: NEW WIPE IS LIVE! Server updated and ready" "success"
+        check_oxide_after_start
+        send_telegram "$(msg wipe_live)" "success"
     else
         exit 1
     fi
 }
 
-case "${1:-}" in
+# Legacy Thursday cron entry (before "tick"): Full Wipe on the first Thursday only
+mode_legacy_fullwipe() {
+    if is_first_thursday; then
+        mode_wipe full false
+    else
+        log "Not first Thursday, exit"
+        exit 0
+    fi
+}
+
+# An event is due once per day, inside [start, start + window) - a VM that was
+# off at the scheduled time does not run it hours late.
+due() {
+    local name="$1" start="$2" window_min="$3"
+    local now stamp
+    now=$(date +%s)
+    stamp="$STATE_DIR/done-$name-$(date +%F)"
+    (( now >= start && now < start + window_min * 60 )) || return 1
+    [ -f "$stamp" ] && return 1
+    touch "$stamp"
+    return 0
+}
+
+days_since_map_wipe() {
+    local newest
+    newest=$(find "$SERVERFILES_DIR/server/$LGSM_SELFNAME" -maxdepth 1 -name '*.map' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+    [ -z "$newest" ] && { echo 9999; return; }
+    echo $(( ($(date +%s) - ${newest%.*}) / 86400 ))
+}
+
+# Every minute from cron: runs whatever config.env schedules for now, else the watchdog
+mode_tick() {
+    find "$STATE_DIR" -maxdepth 1 -name 'done-*' -mtime +7 -delete 2>/dev/null
+    local full_day=false
+    [[ "$FULLWIPE_ENABLED" == "true" ]] && is_first_thursday && full_day=true
+
+    # Full Wipe: first Thursday, from (London hour - pre-wait), 3 h window
+    if $full_day; then
+        local fw_start
+        fw_start=$(( $(TZ=Europe/London date -d "today $FULLWIPE_LONDON_HOUR:00:00" +%s) - FULLWIPE_PRE_WAIT_MINUTES * 60 ))
+        if due fullwipe "$fw_start" 180; then
+            cleanup_logs
+            mode_wipe full false
+            exit 0
+        fi
+    fi
+
+    # Map Wipe: MAPWIPE_DAY at MAPWIPE_TIME, every MAPWIPE_INTERVAL_WEEKS counted from the last wipe
+    if [[ "$MAPWIPE_ENABLED" == "true" && "$(date +%u)" == "$MAPWIPE_DAY" ]] && ! $full_day; then
+        if due mapwipe "$(date -d "today $MAPWIPE_TIME" +%s)" 60; then
+            local days
+            days=$(days_since_map_wipe)
+            if (( days >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); then
+                cleanup_logs
+                mode_wipe map true
+                exit 0
+            fi
+            log "Map wipe day, but the last wipe was $days days ago (every $MAPWIPE_INTERVAL_WEEKS wk), skipping"
+        fi
+    fi
+
+    if [[ "$DAILY_RESTART_ENABLED" == "true" ]] && due restart "$(date -d "today $DAILY_RESTART_TIME" +%s)" 60; then
+        cleanup_logs
+        mode_restart
+        exit 0
+    fi
+
+    mode_watchdog
+}
+
+# From tick (every minute) or its own cron entry. Restarts a crashed or hung server, never one
+# that was stopped on purpose (LGSM removes its started.lock on a clean stop).
+mode_watchdog() {
+    [[ "$WATCHDOG_ENABLED" != "true" ]] && exit 0
+    local uptime_s
+    uptime_s=$(cut -d. -f1 /proc/uptime)
+    (( uptime_s < 600 )) && exit 0                     # fresh boot: post-boot handles it
+    [ -f "$LGSM_LOCK_DIR/$LGSM_SELFNAME-started.lock" ] || { rm -f "$STATE_DIR/hang"; exit 0; }
+    [ -f "$LGSM_LOCK_DIR/$LGSM_SELFNAME-starting.lock" ] && exit 0
+    local why=""
+    if ! is_server_running; then
+        why="crashed"
+    else
+        local age
+        age=$(ps -o etimes= -C RustDedicated | sort -n | tail -1 | tr -d ' ')
+        if (( ${age:-0} < WATCHDOG_GRACE )) || rcon_command serverinfo >/dev/null 2>&1; then
+            rm -f "$STATE_DIR/hang" "$STATE_DIR/gave_up"
+            exit 0
+        fi
+        local n=$(( $(cat "$STATE_DIR/hang" 2>/dev/null || echo 0) + 1 ))
+        echo "$n" > "$STATE_DIR/hang"
+        log "Watchdog: RCON not answering ($n/$WATCHDOG_HANG_CHECKS)"
+        (( n < WATCHDOG_HANG_CHECKS )) && exit 0
+        rm -f "$STATE_DIR/hang"
+        why="hung"
+    fi
+    local now recent
+    now=$(date +%s)
+    recent=$(awk -v t=$((now - 3600)) '$1 > t' "$STATE_DIR/restarts" 2>/dev/null | wc -l)
+    if (( recent >= WATCHDOG_MAX_RESTARTS )); then
+        if [ ! -f "$STATE_DIR/gave_up" ]; then
+            touch "$STATE_DIR/gave_up"
+            log "Watchdog: $recent restarts within an hour, giving up"
+            send_telegram "$(msg wd_give_up)" "error"
+        fi
+        exit 0
+    fi
+    { awk -v t=$((now - 3600)) '$1 > t' "$STATE_DIR/restarts" 2>/dev/null; echo "$now"; } > "$STATE_DIR/restarts.new"
+    mv -f "$STATE_DIR/restarts.new" "$STATE_DIR/restarts"
+    log "Watchdog: server $why, restarting"
+    if [[ "$why" == "hung" ]]; then
+        send_telegram "$(msg wd_hung)" "error"
+    else
+        send_telegram "$(msg wd_crashed)" "error"
+    fi
+    if start_server; then
+        send_telegram "$(msg wd_restarted)" "success"
+    else
+        send_telegram "$(msg wd_restart_fail)" "error"
+    fi
+}
+
+MODE="${1:-}"
+case "$MODE" in
     restart)
+        acquire_lock; cleanup_logs
         mode_restart
         ;;
+    tick)
+        acquire_lock quiet
+        mode_tick
+        ;;
     fullwipe)
-        mode_fullwipe false
+        acquire_lock; cleanup_logs
+        mode_legacy_fullwipe
         ;;
     fullwipe-now)
+        acquire_lock; cleanup_logs
         log "Manual Full Wipe (no date check)"
-        mode_fullwipe true
+        mode_wipe full true
         ;;
-    test-telegram)
-        send_telegram "🧪 $SERVER_TAG: Telegram notification test" "full"
+    mapwipe-now)
+        acquire_lock; cleanup_logs
+        log "Manual Map Wipe (no date check)"
+        mode_wipe map true
         ;;
     post-boot)
+        acquire_lock; cleanup_logs
         mode_post_boot
+        ;;
+    watchdog)
+        acquire_lock quiet
+        mode_watchdog
+        ;;
+    test-telegram)
+        send_telegram "$(msg test)" "full"
         ;;
     check-update)
         if check_rust_update_available; then
@@ -350,12 +697,15 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo "Usage: $0 {restart|fullwipe|fullwipe-now|post-boot|test-telegram|check-update}"
+        echo "Usage: $0 {tick|restart|fullwipe|fullwipe-now|mapwipe-now|post-boot|watchdog|test-telegram|check-update}"
         echo ""
-        echo "  restart        - daily restart (auto-skips on Full Wipe day)"
-        echo "  fullwipe       - Full Wipe (only on first Thursday of month)"
-        echo "  fullwipe-now   - Full Wipe immediately, no date check (manual/test)"
+        echo "  tick           - cron every minute: runs the schedule from config.env + watchdog"
+        echo "  restart        - daily restart now (auto-skips on Full Wipe day)"
+        echo "  fullwipe       - legacy cron entry: Full Wipe only on the first Thursday"
+        echo "  fullwipe-now   - Full Wipe immediately, no date check, no update wait"
+        echo "  mapwipe-now    - Map Wipe immediately (blueprints kept)"
         echo "  post-boot      - report the server state after a VM boot (@reboot cron)"
+        echo "  watchdog       - restart a crashed or hung server (cron every few minutes)"
         echo "  test-telegram  - test Telegram notifications"
         echo "  check-update   - check Rust update availability"
         exit 1
