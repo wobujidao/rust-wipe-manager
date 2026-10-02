@@ -201,6 +201,49 @@ update_oxide() {
     fi
 }
 
+update_system() {
+    [[ "$SYSTEM_UPDATE_ENABLED" != "true" ]] && return 0
+    log "Updating OS packages (unattended-upgrade)..."
+    if sudo /usr/bin/apt-get update -qq && sudo /usr/bin/unattended-upgrade; then
+        send_telegram "✅ $SERVER_TAG: OS updates installed" "full"
+    else
+        send_telegram "❌ $SERVER_TAG: OS update error" "error"
+    fi
+}
+
+# Called while the server is down. Returns only if the VM keeps running.
+reboot_if_required() {
+    # One-time power-off: the host does maintenance (e.g. EFI keys) and starts the VM again
+    if [ -f "$SCRIPT_DIR/.poweroff-once" ]; then
+        rm -f "$SCRIPT_DIR/.poweroff-once"
+        log "Power-off flag found, powering the VM off for host maintenance"
+        send_telegram "⏻ $SERVER_TAG: VM powering off for host maintenance, the host will start it again" "full"
+        sudo /usr/sbin/poweroff
+        exit 0
+    fi
+    [[ "$REBOOT_IF_REQUIRED" != "true" ]] && return 0
+    [ -f /var/run/reboot-required ] || return 0
+    log "OS requires a reboot ($(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)), rebooting instead of starting"
+    send_telegram "🔁 $SERVER_TAG: OS update needs a reboot, rebooting VM (server starts on boot)" "full"
+    sudo /usr/sbin/reboot
+    exit 0
+}
+
+mode_post_boot() {
+    log "Boot detected, waiting for the server (up to $((SERVER_START_TIMEOUT/60)) min)..."
+    local checks=$((SERVER_START_TIMEOUT/10))
+    for ((i=1; i<=checks; i++)); do
+        sleep 10
+        if is_server_running; then
+            log "Server is running after boot (kernel $(uname -r))"
+            send_telegram "✅ $SERVER_TAG: VM booted, server is up (kernel $(uname -r))" "success"
+            return 0
+        fi
+    done
+    send_telegram "❌ $SERVER_TAG: VM booted, but the server did not start in $((SERVER_START_TIMEOUT/60)) min" "error"
+    exit 1
+}
+
 mode_restart() {
     if [[ "$DAILY_RESTART_ENABLED" != "true" ]]; then
         log "Daily restart disabled in config"
@@ -215,6 +258,8 @@ mode_restart() {
     stop_server_graceful "$DAILY_RESTART_COUNTDOWN" "server_restart"
     [[ "$DAILY_RESTART_UPDATE_RUST" == "true" ]] && update_rust
     [[ "$DAILY_RESTART_UPDATE_OXIDE" == "true" ]] && update_oxide
+    update_system
+    reboot_if_required
     if start_server; then
         send_telegram "✅ $SERVER_TAG: Daily restart completed successfully" "success"
     else
@@ -292,6 +337,9 @@ case "${1:-}" in
     test-telegram)
         send_telegram "🧪 $SERVER_TAG: Telegram notification test" "full"
         ;;
+    post-boot)
+        mode_post_boot
+        ;;
     check-update)
         if check_rust_update_available; then
             echo "UPDATE AVAILABLE"
@@ -302,11 +350,12 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo "Usage: $0 {restart|fullwipe|fullwipe-now|test-telegram|check-update}"
+        echo "Usage: $0 {restart|fullwipe|fullwipe-now|post-boot|test-telegram|check-update}"
         echo ""
         echo "  restart        - daily restart (auto-skips on Full Wipe day)"
         echo "  fullwipe       - Full Wipe (only on first Thursday of month)"
         echo "  fullwipe-now   - Full Wipe immediately, no date check (manual/test)"
+        echo "  post-boot      - report the server state after a VM boot (@reboot cron)"
         echo "  test-telegram  - test Telegram notifications"
         echo "  check-update   - check Rust update availability"
         exit 1
