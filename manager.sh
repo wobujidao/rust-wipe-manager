@@ -27,6 +27,9 @@ source "$SECRETS_FILE"
 : "${MAPWIPE_TIME:=19:00}"
 : "${MAPWIPE_INTERVAL_WEEKS:=1}"
 : "${MAPWIPE_MONTH_DAYS:=}"
+: "${MAPWIPE_OPEN_TIME:=}"
+: "${FULLWIPE_OPEN_TIME:=}"
+: "${WIPETIMER_ENABLED:=false}"
 : "${OXIDE_CHECK_ENABLED:=true}"
 : "${OXIDE_LOAD_TIMEOUT:=900}"
 : "${WATCHDOG_ENABLED:=true}"
@@ -85,6 +88,8 @@ msg() {
             wipe_done)         echo "✅ $SERVER_TAG: $wipe_name выполнен" ;;
             wipe_error)        echo "❌ $SERVER_TAG: ошибка: $wipe_name не выполнен" ;;
             wipe_live)         echo "🎉 $SERVER_NAME: НОВЫЙ ВАЙП! Сервер обновлён и запущен (seed $(current_seed))" ;;
+            gate_closed)       echo "⏳ $SERVER_TAG: сервер готов, игроки ждут в очереди до $open_at" ;;
+            gate_opened)       echo "🚪 $SERVER_TAG: сервер открыт, очередь заходит (слотов: $max)" ;;
             not_ready)         echo "⚠️ $SERVER_TAG: сервер запущен, но RCON не отвечает уже $((OXIDE_LOAD_TIMEOUT/60)) мин. Oxide не проверен" ;;
             oxide_rollback)    echo "⚠️ $SERVER_TAG: Oxide не загрузился ($why). Откатываю Managed/ на копию до обновления Oxide" ;;
             oxide_rolled_back) echo "✅ $SERVER_TAG: откат сделан, сервер запущен. Если обновлялся сам Rust, копия без Oxide: плагины не работают до выхода исправления uMod" ;;
@@ -129,6 +134,8 @@ msg() {
             wipe_done)         echo "✅ $SERVER_TAG: $wipe_name completed" ;;
             wipe_error)        echo "❌ $SERVER_TAG: $wipe_name error" ;;
             wipe_live)         echo "🎉 $SERVER_NAME: NEW WIPE IS LIVE! Server updated and ready (seed $(current_seed))" ;;
+            gate_closed)       echo "⏳ $SERVER_TAG: server ready, players wait in the queue until $open_at" ;;
+            gate_opened)       echo "🚪 $SERVER_TAG: server open, the queue is joining ($max slots)" ;;
             not_ready)         echo "⚠️ $SERVER_TAG: Server started, but RCON has not answered for $((OXIDE_LOAD_TIMEOUT/60)) min. Oxide not checked" ;;
             oxide_rollback)    echo "⚠️ $SERVER_TAG: Oxide did not load ($why). Rolling Managed/ back to the copy taken before the Oxide update" ;;
             oxide_rolled_back) echo "✅ $SERVER_TAG: Rolled back, server is running. If Rust itself was updated, that copy has no Oxide: plugins are off until uMod ships a fix" ;;
@@ -523,12 +530,24 @@ mode_wipe() {
         send_telegram "$(msg wipe_error)" "error"
         exit 1
     fi
+    local open_unix="" open_at
+    if [[ "$kind" == "full" ]]; then open_unix=$(open_time_today "$FULLWIPE_OPEN_TIME")
+    else open_unix=$(open_time_today "$MAPWIPE_OPEN_TIME"); fi
+    [ -n "$open_unix" ] && { gate_close "$open_unix" || open_unix=""; }
     if start_server; then
         check_oxide_after_start
         send_telegram "$(msg wipe_live)" "success"
     else
         exit 1
     fi
+    if [ -n "$open_unix" ]; then
+        open_at=$(date -d @"$open_unix" +%H:%M)
+        send_telegram "$(msg gate_closed)" "full"
+        local wait_s=$(( open_unix - $(date +%s) ))
+        (( wait_s > 0 )) && sleep "$wait_s"
+        gate_open
+    fi
+    rm -f "$STATE_DIR/wipetimer"
 }
 
 # Legacy Thursday cron entry (before "tick"): Full Wipe on the first Thursday only
@@ -571,9 +590,100 @@ days_since_map_wipe() {
     echo $(( ($(date +%s) - ${newest%.*}) / 86400 ))
 }
 
+# ---- Opening gate: after a wipe the server comes up with maxplayers 0, so everyone who
+# connects waits in Rust's own queue, and at *_OPEN_TIME maxplayers goes back and the
+# queue joins in arrival order. The real value lives in LGSM's config; the gate file keeps
+# "open_unix maxplayers" so the next tick reopens even if this run dies.
+LGSM_CFG="$(dirname "$LGSM_SCRIPT")/lgsm/config-lgsm/$LGSM_SELFNAME/$LGSM_SELFNAME.cfg"
+GATE_FILE="$STATE_DIR/gate"
+
+gate_close() {
+    local open_unix="$1" max
+    max=$(sed -n 's/^maxplayers="\([0-9]*\)".*/\1/p' "$LGSM_CFG")
+    [ -z "$max" ] || [ "$max" -eq 0 ] && { log "Gate: no maxplayers in $LGSM_CFG, not closing"; return 1; }
+    echo "$open_unix $max" > "$GATE_FILE"
+    sed -i 's/^maxplayers="[0-9]*"/maxplayers="0"/' "$LGSM_CFG"
+    log "Gate closed until $(date -d @"$open_unix" '+%F %T') (maxplayers $max -> 0)"
+}
+
+gate_open() {
+    [ -f "$GATE_FILE" ] || return 0
+    local open_unix max
+    read -r open_unix max < "$GATE_FILE"
+    sed -i "s/^maxplayers=\"[0-9]*\"/maxplayers=\"$max\"/" "$LGSM_CFG"
+    if is_server_running && ! rcon_command "server.maxplayers $max" >/dev/null 2>&1; then
+        log "Gate: RCON did not answer, will retry"
+        return 1
+    fi
+    rm -f "$GATE_FILE"
+    log "Gate opened (maxplayers $max)"
+    send_telegram "$(msg gate_opened)" "success"
+}
+
+# The wipe run itself waits for the opening time; tick is the safety net
+gate_check() {
+    [ -f "$GATE_FILE" ] || return 0
+    local open_unix max
+    read -r open_unix max < "$GATE_FILE"
+    (( $(date +%s) >= open_unix )) && gate_open
+    return 0
+}
+
+# Unix time of HH:MM today, or empty when the setting is empty or that time has passed
+open_time_today() {
+    [ -z "$1" ] && return 0
+    local t
+    t=$(date -d "today $1" +%s) || return 0
+    (( t > $(date +%s) )) && echo "$t"
+}
+
+# ---- Wipe timer: Rust shows "next wipe in ..." in the server browser. Feed it the real
+# next wipe from this schedule through wipetimer.wipeunixtimestampoverride.
+next_wipe_unix() {
+    local best="" d ts day dow
+    for ((d=0; d<=62; d++)); do
+        day=$(date -d "today +$d day" +%F)
+        dow=$(date -d "$day" +%u)
+        ts=""
+        if [[ "$FULLWIPE_ENABLED" == "true" && "$dow" == "4" ]] && (( 10#$(date -d "$day" +%d) <= 7 )); then
+            ts=$(TZ=Europe/London date -d "$day $FULLWIPE_LONDON_HOUR:00:00" +%s)
+        elif [[ "$MAPWIPE_ENABLED" == "true" && "$dow" == "$MAPWIPE_DAY" ]]; then
+            local dom from to
+            dom=$(date -d "$day" +%-d)
+            from=${MAPWIPE_MONTH_DAYS%-*}; to=${MAPWIPE_MONTH_DAYS#*-}
+            if [ -z "$MAPWIPE_MONTH_DAYS" ] || (( dom >= from && dom <= to )); then
+                if [ -n "$MAPWIPE_OPEN_TIME" ]; then
+                    ts=$(date -d "$day $MAPWIPE_OPEN_TIME" +%s)
+                else
+                    ts=$(( $(date -d "$day $MAPWIPE_TIME" +%s) + FULLWIPE_COUNTDOWN ))
+                fi
+            fi
+        fi
+        if [ -n "$ts" ] && (( ts > $(date +%s) )); then best=$ts; break; fi
+    done
+    echo "$best"
+}
+
+wipetimer_check() {
+    [[ "$WIPETIMER_ENABLED" != "true" ]] && return 0
+    is_server_running || return 0
+    local next pid stamp
+    next=$(next_wipe_unix)
+    [ -z "$next" ] && return 0
+    pid=$(pgrep -x RustDedicated | head -1)
+    # leave a loading server alone (RCON is not up yet, every try would wait 30 s)
+    (( $(ps -o etimes= -p "$pid" | tr -d ' ') < 900 )) && return 0
+    stamp="$next $pid"
+    [[ "$(cat "$STATE_DIR/wipetimer" 2>/dev/null)" == "$stamp" ]] && return 0
+    rcon_command "wipetimer.wipeunixtimestampoverride $next" >/dev/null 2>&1 || return 0
+    echo "$stamp" > "$STATE_DIR/wipetimer"
+    log "Wipe timer set: next wipe $(date -d @"$next" '+%F %T %Z')"
+}
+
 # Every minute from cron: runs whatever config.env schedules for now, else the watchdog
 mode_tick() {
     find "$STATE_DIR" -maxdepth 1 -name 'done-*' -mtime +7 -delete 2>/dev/null
+    gate_check
     local full_day=false
     [[ "$FULLWIPE_ENABLED" == "true" ]] && is_first_thursday && full_day=true
 
@@ -609,6 +719,7 @@ mode_tick() {
         exit 0
     fi
 
+    wipetimer_check
     mode_watchdog
 }
 

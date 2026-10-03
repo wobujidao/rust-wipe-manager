@@ -515,6 +515,9 @@ All settings live in `config.env`. [`config.env.example`](config.env.example) do
 | `MAPWIPE_TIME` | `19:00` | Start time (VM local time); the countdown starts then |
 | `MAPWIPE_INTERVAL_WEEKS` | `1` | 1 = every week, 2 = every two weeks, ...; counted from the last wipe of any kind |
 | `MAPWIPE_MONTH_DAYS` | `""` | Days of the month, `FROM-TO` (e.g. `16-22`); empty = any day |
+| `MAPWIPE_OPEN_TIME` | `""` | After a map wipe hold players in the connection queue (maxplayers 0) until HH:MM; empty = open when up |
+| `FULLWIPE_OPEN_TIME` | `""` | Same for the Full Wipe |
+| `WIPETIMER_ENABLED` | `false` | Show the next wipe from this schedule in the server browser (`wipetimer.wipeunixtimestampoverride`) |
 | `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | `true` | Skip daily restart on Full Wipe Thursday |
 | `OXIDE_BACKUP_BEFORE_UPDATE` | `true` | Backup `Managed/` before Oxide update |
 | `OXIDE_CHECK_ENABLED` | `true` | After a start: check `oxide.version`, roll `Managed/` back if Oxide is broken |
@@ -560,6 +563,10 @@ MAPWIPE_TIME="19:50"
 MAPWIPE_INTERVAL_WEEKS=1
 MAPWIPE_MONTH_DAYS="16-22"
 ```
+
+### Opening at a fixed time
+
+With `MAPWIPE_OPEN_TIME="20:00"` the wipe run starts the new map with `maxplayers="0"` in the LGSM config, so everyone who connects lands in Rust's own connection queue. At 20:00 the original value comes back (LGSM config + `server.maxplayers` over RCON) and the queue joins in arrival order. The state is kept in `.state/gate`; if the run dies, the next `tick` reopens the server at the opening time. Start the wipe early enough for map generation (about 12 minutes for a 3500 map).
 
 The interval is counted from the last wipe of any kind (the newest `*.map` file), so a forced monthly Full Wipe resets it. The Full Wipe stays on the first Thursday, because Facepunch's forced update sets that day. A Map Wipe is skipped on the Full Wipe day.
 
