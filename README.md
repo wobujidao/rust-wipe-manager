@@ -152,7 +152,7 @@ graph TD
 
 - **Daily restart** — at `DAILY_RESTART_TIME`.
 - **Full Wipe** — first Thursday, starting at (London `FULLWIPE_LONDON_HOUR` − `FULLWIPE_PRE_WAIT_MINUTES`), inside a 3-hour window.
-- **Map Wipe** — on `MAPWIPE_DAY` (1=Mon … 7=Sun) at `MAPWIPE_TIME`, every `MAPWIPE_INTERVAL_WEEKS`, counted from the last wipe of any kind (the newest `*.map` file's modification time). Skipped on the Full Wipe day.
+- **Map Wipe** — on `MAPWIPE_DAY` (1=Mon … 7=Sun) at `MAPWIPE_TIME`, every `MAPWIPE_INTERVAL_WEEKS`, counted from the last wipe of any kind (the newest `*.map` file's modification time), and only on `MAPWIPE_MONTH_DAYS` when that is set. Skipped on the Full Wipe day.
 - **Once per day, inside a window** — each event fires once per day, inside a window (1 hour for the restart and Map Wipe, 3 hours for the Full Wipe). A VM that was off at that time skips the event instead of running it hours late. The "done" stamps live in `.state/done-*`.
 - **Otherwise** — `tick` runs the watchdog.
 - **Legacy commands** — `restart` runs a daily restart immediately; `fullwipe` is the old cron entry (Full Wipe on the first Thursday only).
@@ -514,6 +514,7 @@ All settings live in `config.env`. [`config.env.example`](config.env.example) do
 | `MAPWIPE_DAY` | `5` | Day of week: 1=Mon … 7=Sun |
 | `MAPWIPE_TIME` | `19:00` | Start time (VM local time); the countdown starts then |
 | `MAPWIPE_INTERVAL_WEEKS` | `1` | 1 = every week, 2 = every two weeks, ...; counted from the last wipe of any kind |
+| `MAPWIPE_MONTH_DAYS` | `""` | Days of the month, `FROM-TO` (e.g. `16-22`); empty = any day |
 | `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | `true` | Skip daily restart on Full Wipe Thursday |
 | `OXIDE_BACKUP_BEFORE_UPDATE` | `true` | Backup `Managed/` before Oxide update |
 | `OXIDE_CHECK_ENABLED` | `true` | After a start: check `oxide.version`, roll `Managed/` back if Oxide is broken |
@@ -548,6 +549,16 @@ MAPWIPE_ENABLED="true"
 MAPWIPE_DAY=1
 MAPWIPE_TIME="18:00"
 MAPWIPE_INTERVAL_WEEKS=2
+```
+
+```env
+# Twice a month: the forced first-Thursday wipe plus a map wipe on the Friday
+# two weeks later (always the 16th-22nd)
+MAPWIPE_ENABLED="true"
+MAPWIPE_DAY=5
+MAPWIPE_TIME="19:50"
+MAPWIPE_INTERVAL_WEEKS=1
+MAPWIPE_MONTH_DAYS="16-22"
 ```
 
 The interval is counted from the last wipe of any kind (the newest `*.map` file), so a forced monthly Full Wipe resets it. The Full Wipe stays on the first Thursday, because Facepunch's forced update sets that day. A Map Wipe is skipped on the Full Wipe day.

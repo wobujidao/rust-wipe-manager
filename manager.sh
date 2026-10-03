@@ -26,6 +26,7 @@ source "$SECRETS_FILE"
 : "${MAPWIPE_DAY:=5}"
 : "${MAPWIPE_TIME:=19:00}"
 : "${MAPWIPE_INTERVAL_WEEKS:=1}"
+: "${MAPWIPE_MONTH_DAYS:=}"
 : "${OXIDE_CHECK_ENABLED:=true}"
 : "${OXIDE_LOAD_TIMEOUT:=900}"
 : "${WATCHDOG_ENABLED:=true}"
@@ -553,6 +554,16 @@ due() {
     return 0
 }
 
+# MAPWIPE_MONTH_DAYS="16-22": map wipes only on those days of the month; empty = any day
+in_mapwipe_month_days() {
+    [ -z "$MAPWIPE_MONTH_DAYS" ] && return 0
+    local dom from to
+    dom=$(date +%-d)
+    from=${MAPWIPE_MONTH_DAYS%-*}
+    to=${MAPWIPE_MONTH_DAYS#*-}
+    (( dom >= from && dom <= to ))
+}
+
 days_since_map_wipe() {
     local newest
     newest=$(find "$SERVERFILES_DIR/server/$LGSM_SELFNAME" -maxdepth 1 -name '*.map' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
@@ -577,8 +588,9 @@ mode_tick() {
         fi
     fi
 
-    # Map Wipe: MAPWIPE_DAY at MAPWIPE_TIME, every MAPWIPE_INTERVAL_WEEKS counted from the last wipe
-    if [[ "$MAPWIPE_ENABLED" == "true" && "$(date +%u)" == "$MAPWIPE_DAY" ]] && ! $full_day; then
+    # Map Wipe: MAPWIPE_DAY at MAPWIPE_TIME, every MAPWIPE_INTERVAL_WEEKS counted from the last wipe,
+    # only inside MAPWIPE_MONTH_DAYS when that is set
+    if [[ "$MAPWIPE_ENABLED" == "true" && "$(date +%u)" == "$MAPWIPE_DAY" ]] && ! $full_day && in_mapwipe_month_days; then
         if due mapwipe "$(date -d "today $MAPWIPE_TIME" +%s)" 60; then
             local days
             days=$(days_since_map_wipe)
