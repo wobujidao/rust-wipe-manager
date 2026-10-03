@@ -568,6 +568,8 @@ MAPWIPE_MONTH_DAYS="16-22"
 
 With `MAPWIPE_OPEN_TIME="20:00"` the wipe run starts the new map with `maxplayers="0"` in the LGSM config, so everyone who connects lands in Rust's own connection queue. At 20:00 the original value comes back (LGSM config + `server.maxplayers` over RCON) and the queue joins in arrival order. The state is kept in `.state/gate`; if the run dies, the next `tick` reopens the server at the opening time. Start the wipe early enough for map generation (about 12 minutes for a 3500 map).
 
+Instead of `HH:MM` either setting may be `+N`: open at the next N-minute mark after the server is up (`+5`: up at 22:13 → opens 22:15), so nobody queues longer than N minutes — useful for the Full Wipe, whose start depends on the Facepunch update.
+
 The interval is counted from the last wipe of any kind (the newest `*.map` file), so a forced monthly Full Wipe resets it. The Full Wipe stays on the first Thursday, because Facepunch's forced update sets that day. A Map Wipe is skipped on the Full Wipe day.
 
 ### 🌱 Map seed

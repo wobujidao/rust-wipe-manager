@@ -530,9 +530,16 @@ mode_wipe() {
         send_telegram "$(msg wipe_error)" "error"
         exit 1
     fi
-    local open_unix="" open_at
-    if [[ "$kind" == "full" ]]; then open_unix=$(open_time_today "$FULLWIPE_OPEN_TIME")
-    else open_unix=$(open_time_today "$MAPWIPE_OPEN_TIME"); fi
+    local open_spec open_unix="" open_at round=0
+    if [[ "$kind" == "full" ]]; then open_spec="$FULLWIPE_OPEN_TIME"; else open_spec="$MAPWIPE_OPEN_TIME"; fi
+    if [[ "$open_spec" =~ ^\+([0-9]+)$ ]]; then
+        # "+5": open at the next 5-minute mark after the server is up; the hour ahead is
+        # only the safety-net time for tick until the real one is known
+        round=${BASH_REMATCH[1]}
+        open_unix=$(( $(date +%s) + 3600 ))
+    else
+        open_unix=$(open_time_today "$open_spec")
+    fi
     [ -n "$open_unix" ] && { gate_close "$open_unix" || open_unix=""; }
     if start_server; then
         check_oxide_after_start
@@ -541,6 +548,11 @@ mode_wipe() {
         exit 1
     fi
     if [ -n "$open_unix" ]; then
+        wait_for_rcon >/dev/null
+        if (( round > 0 )); then
+            open_unix=$(( ($(date +%s) / (round * 60) + 1) * round * 60 ))
+            echo "$open_unix $(cut -d' ' -f2 "$GATE_FILE")" > "$GATE_FILE"
+        fi
         open_at=$(date -d @"$open_unix" +%H:%M)
         send_telegram "$(msg gate_closed)" "full"
         local wait_s=$(( open_unix - $(date +%s) ))
