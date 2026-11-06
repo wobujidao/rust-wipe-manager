@@ -204,7 +204,8 @@ is_server_running() {
 }
 
 is_first_thursday() {
-    local day=$(date +%d)
+    # %-d: "08"/"09" would be read as invalid octal by [[ -ge ]] (error on stderr every tick)
+    local day=$(date +%-d)
     local dow=$(date +%u)
     [[ "$dow" == "4" && "$day" -ge 1 && "$day" -le 7 ]]
 }
