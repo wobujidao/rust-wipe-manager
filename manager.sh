@@ -374,19 +374,30 @@ check_oxide_after_start() {
     [[ "$OXIDE_CHECK_ENABLED" != "true" ]] && return 0
     local why rc
     wait_for_rcon; rc=$?
-    if [ "$rc" -eq 1 ]; then
+    # A game crash while loading is NOT an Oxide failure (2026-11-05: the depot was mid-publish,
+    # a plain restart worked, but the rollback of Managed/ made things worse). Restart up to
+    # twice and leave Managed/ alone; only a server that ANSWERS RCON without Oxide is rolled back.
+    local try=0
+    while [ "$rc" -eq 2 ] && (( try < 2 )); do
+        try=$((try + 1))
+        log "Server crashed while loading (not treated as an Oxide failure), restart $try/2"
+        send_telegram "$(msg wd_crashed)" "error"
+        start_server || return 1
+        wait_for_rcon; rc=$?
+    done
+    if [ "$rc" -eq 2 ]; then
+        log "Server keeps crashing while loading; Managed/ left untouched, manual intervention needed"
+        send_telegram "$(msg wd_give_up)" "error"
+        return 1
+    elif [ "$rc" -eq 1 ]; then
         send_telegram "$(msg not_ready)" "error"
         return 1
-    elif [ "$rc" -eq 2 ]; then
-        why="server crashed while loading"
     elif oxide_loaded; then
         log "Oxide loaded: $(rcon_command oxide.version 2>/dev/null | head -1)"
         return 0
-    else
-        why="oxide.version did not answer"
     fi
-    [[ "$MESSAGES_LANG" == "ru" && "$rc" -eq 2 ]] && why="сервер упал при загрузке"
-    [[ "$MESSAGES_LANG" == "ru" && "$rc" -eq 0 ]] && why="oxide.version не отвечает"
+    why="oxide.version did not answer"
+    [[ "$MESSAGES_LANG" == "ru" ]] && why="oxide.version не отвечает"
     log "Oxide check failed: $why"
     if [ -z "$OXIDE_BACKUP" ] || [ ! -d "$OXIDE_BACKUP" ]; then
         send_telegram "$(msg oxide_no_backup)" "error"
@@ -541,8 +552,13 @@ mode_wipe() {
         open_unix=$(open_time_today "$open_spec")
     fi
     [ -n "$open_unix" ] && { gate_close "$open_unix" || open_unix=""; }
+    set_wipe_name
     if start_server; then
         check_oxide_after_start
+        if ! is_server_running; then
+            log "Server is not running after the wipe: no announcement, gate stays closed for the tick safety net"
+            exit 1
+        fi
         send_telegram "$(msg wipe_live)" "success"
     else
         exit 1
@@ -609,6 +625,15 @@ days_since_map_wipe() {
 LGSM_CFG="$(dirname "$LGSM_SCRIPT")/lgsm/config-lgsm/$LGSM_SELFNAME/$LGSM_SELFNAME.cfg"
 GATE_FILE="$STATE_DIR/gate"
 
+# Server name carries the date of the last wipe ("BASE | WIPE dd.mm"), the way players
+# scan the browser for fresh servers. LGSM passes servername as +server.hostname at start.
+set_wipe_name() {
+    [[ "$SERVERNAME_WIPE_DATE" == "true" && -n "$SERVERNAME_BASE" ]] || return 0
+    local name="$SERVERNAME_BASE | WIPE $(date +%d.%m)"
+    sed -i "s/^servername=\".*\"/servername=\"$name\"/" "$LGSM_CFG"
+    log "Server name: $name"
+}
+
 gate_close() {
     local open_unix="$1" max
     max=$(sed -n 's/^maxplayers="\([0-9]*\)".*/\1/p' "$LGSM_CFG")
@@ -622,9 +647,26 @@ gate_open() {
     [ -f "$GATE_FILE" ] || return 0
     local open_unix max
     read -r open_unix max < "$GATE_FILE"
+    # Never "open" a dead or still-booting server (2026-11-05: opened at 21:41 with no process,
+    # maxplayers stayed 0). Keep the gate file so the next tick retries.
+    if ! is_server_running; then
+        log "Gate: server is not running, gate stays closed (will retry)"
+        return 1
+    fi
+    local clog cur
+    clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
+    if [ -f "$clog" ] && ! grep -q "Server startup complete" "$clog"; then
+        log "Gate: 'Server startup complete' not seen yet (will retry)"
+        return 1
+    fi
     sed -i "s/^maxplayers=\"[0-9]*\"/maxplayers=\"$max\"/" "$LGSM_CFG"
-    if is_server_running && ! rcon_command "server.maxplayers $max" >/dev/null 2>&1; then
+    if ! rcon_command "server.maxplayers $max" >/dev/null 2>&1; then
         log "Gate: RCON did not answer, will retry"
+        return 1
+    fi
+    cur=$(rcon_command "server.maxplayers" 2>/dev/null | sed -n 's/.*"\([0-9]*\)".*/\1/p' | head -1)
+    if [ "$cur" != "$max" ]; then
+        log "Gate: server.maxplayers reads '$cur', expected $max (will retry)"
         return 1
     fi
     rm -f "$GATE_FILE"
