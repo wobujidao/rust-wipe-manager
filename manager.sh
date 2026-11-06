@@ -203,6 +203,14 @@ is_server_running() {
     pgrep -x RustDedicated >/dev/null
 }
 
+# FULLWIPE_LONDON_HOUR on the VM's local date. Not TZ=Europe/London "today": east of London the
+# local day starts while London is still on the day before, so at 00:00-00:04 MSK on the first
+# Thursday "today 19:00 London" was Wednesday 22:00 MSK and the 3-hour Full Wipe window
+# (from 21:05 MSK with FULLWIPE_PRE_WAIT_MINUTES=55) was still open: the wipe started at midnight.
+london_hour_today() {
+    TZ=Europe/London date -d "$(date +%F) $FULLWIPE_LONDON_HOUR:00:00" +%s
+}
+
 is_first_thursday() {
     # %-d: "08"/"09" would be read as invalid octal by [[ -ge ]] (error on stderr every tick)
     local day=$(date +%-d)
@@ -505,7 +513,7 @@ mode_wipe() {
         exit 0
     fi
     local target_unix
-    target_unix=$(TZ=Europe/London date -d "today $FULLWIPE_LONDON_HOUR:00:00" +%s)
+    target_unix=$(london_hour_today)
     local now_unix=$(date +%s)
     local pre_wait_seconds=$((FULLWIPE_PRE_WAIT_MINUTES * 60))
     local start_at=$((target_unix - pre_wait_seconds))
@@ -745,7 +753,7 @@ mode_tick() {
     # Full Wipe: first Thursday, from (London hour - pre-wait), 3 h window
     if $full_day; then
         local fw_start
-        fw_start=$(( $(TZ=Europe/London date -d "today $FULLWIPE_LONDON_HOUR:00:00" +%s) - FULLWIPE_PRE_WAIT_MINUTES * 60 ))
+        fw_start=$(( $(london_hour_today) - FULLWIPE_PRE_WAIT_MINUTES * 60 ))
         if due fullwipe "$fw_start" 180; then
             cleanup_logs
             mode_wipe full false
