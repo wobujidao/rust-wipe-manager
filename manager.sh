@@ -84,6 +84,8 @@ msg() {
             wipe_today)        echo "🕐 $SERVER_TAG: сегодня $wipe_name. Подготовка через $((sleep_for/60)) мин" ;;
             wipe_prep)         echo "🔥 $SERVER_NAME: начинаю $wipe_name" ;;
             wipe_abort_update) echo "🚨 $SERVER_TAG: Rust не обновился, $wipe_name отменён" ;;
+            wipe_resumed)      echo "↩️ $SERVER_TAG: $wipe_name отменён, сервер снова запущен без вайпа. Вайп — вручную, когда будет можно" ;;
+            load_give_up)      echo "🚨 $SERVER_TAG: сервер падает при загрузке (3 запуска подряд). Managed/ не трогал, нужен человек!" ;;
             wipe_running)      echo "🗑 $SERVER_TAG: $wipe_name ($wipe_what)" ;;
             wipe_done)         echo "✅ $SERVER_TAG: $wipe_name выполнен" ;;
             wipe_error)        echo "❌ $SERVER_TAG: ошибка: $wipe_name не выполнен" ;;
@@ -130,6 +132,8 @@ msg() {
             wipe_today)        echo "🕐 $SERVER_TAG: $wipe_name today. Preparation in $((sleep_for/60)) min" ;;
             wipe_prep)         echo "🔥 $SERVER_NAME: $wipe_name PREPARATION STARTED" ;;
             wipe_abort_update) echo "🚨 $SERVER_TAG: Rust update failed, aborting $wipe_name" ;;
+            wipe_resumed)      echo "↩️ $SERVER_TAG: $wipe_name cancelled, server started again without a wipe. Run the wipe by hand when possible" ;;
+            load_give_up)      echo "🚨 $SERVER_TAG: Server crashes while loading (3 starts in a row). Managed/ left untouched, manual intervention required!" ;;
             wipe_running)      echo "🗑 $SERVER_TAG: Performing $wipe_name ($wipe_what)" ;;
             wipe_done)         echo "✅ $SERVER_TAG: $wipe_name completed" ;;
             wipe_error)        echo "❌ $SERVER_TAG: $wipe_name error" ;;
@@ -258,7 +262,7 @@ stop_server_graceful() {
         sleep 10
     done
     log "Force stop via systemd..."
-    send_telegram "$(msg force_stop)" "full"
+    send_telegram "$(msg force_stop)" "error"
     sudo systemctl stop rustserver
     sleep 30
     return 0
@@ -366,13 +370,14 @@ update_oxide() {
 # OXIDE_LOAD_TIMEOUT without the line also passes (logged): if Rust ever rewords it, the gate
 # must still open; a server that is really still loading does not accept players anyway.
 startup_complete() {
-    local clog pid age
+    local clog pid age mtime
     clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
     [ -f "$clog" ] || return 0
     pid=$(pgrep -x RustDedicated | head -1)
     [ -n "$pid" ] || return 1
     age=$(ps -o etimes= -p "$pid" | tr -d ' ')
-    (( $(stat -c %Y "$clog") < $(date +%s) - ${age:-0} - 60 )) && return 0
+    mtime=$(stat -c %Y "$clog" 2>/dev/null) || return 1
+    (( mtime < $(date +%s) - ${age:-0} - 60 )) && return 0
     grep -q "Server startup complete" "$clog" && return 0
     if (( ${age:-0} >= OXIDE_LOAD_TIMEOUT )); then
         log "No 'Server startup complete' after $(( ${age:-0} / 60 )) min of uptime: not waiting for it any longer"
@@ -424,7 +429,7 @@ check_oxide_after_start() {
     done
     if [ "$rc" -eq 2 ]; then
         log "Server keeps crashing while loading; Managed/ left untouched, manual intervention needed"
-        send_telegram "$(msg wd_give_up)" "error"
+        send_telegram "$(msg load_give_up)" "error"
         return 1
     elif [ "$rc" -eq 1 ]; then
         send_telegram "$(msg not_ready)" "error"
@@ -507,7 +512,7 @@ mode_restart() {
         log "Daily restart disabled in config"
         exit 0
     fi
-    if [[ "$SKIP_DAILY_RESTART_ON_FULLWIPE_DAY" == "true" ]] && is_first_thursday; then
+    if [[ "$SKIP_DAILY_RESTART_ON_FULLWIPE_DAY" == "true" && "$FULLWIPE_ENABLED" == "true" ]] && is_first_thursday; then
         log "Today is Full Wipe day, skipping daily restart"
         send_telegram "$(msg restart_skip)" "full"
         exit 0
@@ -519,11 +524,19 @@ mode_restart() {
     update_system
     reboot_if_required
     if start_server; then
-        check_oxide_after_start
-        # the failure of the check has already been reported; "completed" only for a loaded server
-        $SERVER_READY && send_telegram "$(msg restart_done)" "success"
+        # a failed check has already been reported; "completed" only when it passed
+        check_oxide_after_start && send_telegram "$(msg restart_done)" "success"
     else
         exit 1
+    fi
+}
+
+# A wipe aborted before anything was wiped (no Facepunch update, update error): start the server
+# again as it was, so players are not locked out until someone reacts. The alert is already sent.
+resume_unwiped() {
+    log "Wipe aborted before wiping: starting the server again as it was"
+    if start_server && check_oxide_after_start; then
+        send_telegram "$(msg wipe_resumed)" "error"
     fi
 }
 
@@ -543,7 +556,7 @@ mode_wipe() {
         if [[ "$MESSAGES_LANG" == "ru" ]]; then wipe_name="вайп карты"; wipe_what="только карта, чертежи остаются"
         else wipe_name="Map Wipe"; wipe_what="map only, blueprints kept"; fi
     fi
-    if [[ "$kind" == "full" && "$FULLWIPE_ENABLED" != "true" ]]; then
+    if [[ "$kind" == "full" && "$force" != "true" && "$FULLWIPE_ENABLED" != "true" ]]; then
         log "Full Wipe disabled in config (FULLWIPE_ENABLED)"
         exit 0
     fi
@@ -567,13 +580,15 @@ mode_wipe() {
     if [[ "$kind" == "full" && "$force" != "true" ]]; then
         if ! wait_for_rust_update "$FULLWIPE_UPDATE_WAIT_MAX" "$FULLWIPE_UPDATE_CHECK_INTERVAL"; then
             log "Update wait timeout, aborting wipe"
+            resume_unwiped
             exit 1
         fi
     else
         log "Not waiting for a Facepunch update"
     fi
-    if ! update_rust; then
+    if ! update_rust && ! { log "Rust update failed, one more try in 60 s"; sleep 60; update_rust; }; then
         send_telegram "$(msg wipe_abort_update)" "error"
+        resume_unwiped
         exit 1
     fi
     update_oxide
@@ -654,11 +669,18 @@ in_mapwipe_month_days() {
     (( dom >= from && dom <= to ))
 }
 
-days_since_map_wipe() {
+# Unix time of the newest .map (= the last map wipe), empty when there is none
+last_map_unix() {
     local newest
     newest=$(find "$SERVERFILES_DIR/server/$LGSM_SELFNAME" -maxdepth 1 -name '*.map' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-    [ -z "$newest" ] && { echo 9999; return; }
-    echo $(( ($(date +%s) - ${newest%.*}) / 86400 ))
+    echo "${newest%.*}"
+}
+
+days_since_map_wipe() {
+    local last
+    last=$(last_map_unix)
+    [ -z "$last" ] && { echo 9999; return; }
+    echo $(( ($(date +%s) - last) / 86400 ))
 }
 
 # ---- Opening gate: after a wipe the server comes up with maxplayers 0, so everyone who
@@ -673,6 +695,10 @@ GATE_FILE="$STATE_DIR/gate"
 set_wipe_name() {
     [[ "$SERVERNAME_WIPE_DATE" == "true" && -n "$SERVERNAME_BASE" ]] || return 0
     local name="$SERVERNAME_BASE | WIPE $(date +%d.%m)" esc
+    if [[ "$name" == *[\"\$\`]* ]]; then
+        log "Server name: SERVERNAME_BASE contains \" \$ or \` (LGSM sources its cfg), name left as is"
+        return 0
+    fi
     if ! grep -q '^servername="' "$LGSM_CFG"; then
         log "Server name: no servername= line in $LGSM_CFG, name left as is"
         return 0
@@ -741,8 +767,8 @@ open_time_today() {
 # ---- Wipe timer: Rust shows "next wipe in ..." in the server browser. Feed it the real
 # next wipe from this schedule through wipetimer.wipeunixtimestampoverride.
 next_wipe_unix() {
-    local best="" d ts day dow since
-    since=$(days_since_map_wipe)
+    local best="" d ts day dow last
+    last=$(last_map_unix)
     for ((d=0; d<=62; d++)); do
         day=$(date -d "today +$d day" +%F)
         dow=$(date -d "$day" +%u)
@@ -754,8 +780,10 @@ next_wipe_unix() {
             dom=$(date -d "$day" +%-d)
             from=${MAPWIPE_MONTH_DAYS%-*}; to=${MAPWIPE_MONTH_DAYS#*-}
             if { [ -z "$MAPWIPE_MONTH_DAYS" ] || (( dom >= from && dom <= to )); } &&
-               (( since + d >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); then
-                if [ -n "$MAPWIPE_OPEN_TIME" ]; then
+               { [ -z "$last" ] || (( ($(date -d "$day $MAPWIPE_TIME" +%s) - last) / 86400 >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); }; then
+                if [[ "$MAPWIPE_OPEN_TIME" =~ ^\+([0-9]+)$ ]]; then
+                    ts=$(( $(date -d "$day $MAPWIPE_TIME" +%s) + FULLWIPE_COUNTDOWN + BASH_REMATCH[1] * 60 ))
+                elif [ -n "$MAPWIPE_OPEN_TIME" ]; then
                     ts=$(date -d "$day $MAPWIPE_OPEN_TIME" +%s)
                 else
                     ts=$(( $(date -d "$day $MAPWIPE_TIME" +%s) + FULLWIPE_COUNTDOWN ))
@@ -770,15 +798,14 @@ next_wipe_unix() {
 wipetimer_check() {
     [[ "$WIPETIMER_ENABLED" != "true" ]] && return 0
     is_server_running || return 0
-    local next pid stamp
-    next=$(next_wipe_unix)
-    [ -z "$next" ] && return 0
+    local next pid stamp age
     pid=$(pgrep -x RustDedicated | head -1)
     [ -n "$pid" ] || return 0
     # leave a loading server alone (RCON is not up yet, every try would wait 30 s)
-    local age
     age=$(ps -o etimes= -p "$pid" | tr -d ' ')
     (( ${age:-0} < 900 )) && return 0
+    next=$(next_wipe_unix)
+    [ -z "$next" ] && return 0
     stamp="$next $pid"
     [[ "$(cat "$STATE_DIR/wipetimer" 2>/dev/null)" == "$stamp" ]] && return 0
     rcon_command "wipetimer.wipeunixtimestampoverride $next" >/dev/null 2>&1 || return 0
@@ -917,13 +944,13 @@ case "$MODE" in
         send_telegram "$(msg test)" "full"
         ;;
     check-update)
-        if check_rust_update_available; then
-            echo "UPDATE AVAILABLE"
-            exit 0
-        else
-            echo "No update"
-            exit 1
-        fi
+        check_rust_update_available; rc=$?
+        case $rc in
+            0) echo "UPDATE AVAILABLE" ;;
+            1) echo "No update" ;;
+            *) echo "Cannot read the build numbers (see the log)" ;;
+        esac
+        exit $rc
         ;;
     *)
         echo "Usage: $0 {tick|restart|fullwipe|fullwipe-now|mapwipe-now|post-boot|watchdog|test-telegram|check-update}"
@@ -936,7 +963,7 @@ case "$MODE" in
         echo "  post-boot      - report the server state after a VM boot (@reboot cron)"
         echo "  watchdog       - restart a crashed or hung server (cron every few minutes)"
         echo "  test-telegram  - test Telegram notifications"
-        echo "  check-update   - check Rust update availability"
+        echo "  check-update   - check Rust update availability (exit 0 update, 1 none, 2 unknown)"
         exit 1
         ;;
 esac
