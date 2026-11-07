@@ -359,17 +359,23 @@ update_oxide() {
     fi
 }
 
-# Wait until RCON answers. Returns 1 on timeout, 2 if the process died meanwhile.
+# Wait until the server has finished loading: RCON answers AND "Server startup complete" is in
+# LGSM's console log (a fresh file on every LGSM start; skipped if there is none). RCON alone is
+# not enough: it answers between bootstrap steps while the world is still loading (2026-11-07
+# test: RCON at 17:01:58, startup complete ~17:03), so "wipe is live" went out early and the "+N"
+# opening mark was counted from that moment. Returns 1 on timeout, 2 if the process died meanwhile.
 wait_for_rcon() {
-    local waited=0
-    log "Waiting for RCON (up to $((OXIDE_LOAD_TIMEOUT/60)) min)..."
-    until rcon_command serverinfo >/dev/null 2>&1; do
+    local waited=0 t0 clog
+    t0=$(date +%s)
+    clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
+    log "Waiting for RCON and 'Server startup complete' (up to $((OXIDE_LOAD_TIMEOUT/60)) min)..."
+    until rcon_command serverinfo >/dev/null 2>&1 && { [ ! -f "$clog" ] || grep -q "Server startup complete" "$clog"; }; do
         is_server_running || { log "Server process died while loading"; return 2; }
         (( waited >= OXIDE_LOAD_TIMEOUT )) && { log "RCON timeout"; return 1; }
         sleep 15
         waited=$((waited + 15))
     done
-    log "RCON answers after ~$((waited/60)) min"
+    log "Server ready (RCON + startup complete) after $(( ($(date +%s) - t0) / 60 )) min"
     return 0
 }
 
