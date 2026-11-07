@@ -359,21 +359,41 @@ update_oxide() {
     fi
 }
 
-# Wait until the server has finished loading: RCON answers AND "Server startup complete" is in
-# LGSM's console log (a fresh file on every LGSM start; skipped if there is none). RCON alone is
+# "Server startup complete" in LGSM's console log of the CURRENT start. LGSM rotates that file on
+# every start, so the line cannot be left over from the previous run. A file older than the
+# running process (consolelogging=off leaves a stale one behind) or no file at all = no
+# information: the check is skipped and RCON alone decides. A process older than
+# OXIDE_LOAD_TIMEOUT without the line also passes (logged): if Rust ever rewords it, the gate
+# must still open; a server that is really still loading does not accept players anyway.
+startup_complete() {
+    local clog pid age
+    clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
+    [ -f "$clog" ] || return 0
+    pid=$(pgrep -x RustDedicated | head -1)
+    [ -n "$pid" ] || return 1
+    age=$(ps -o etimes= -p "$pid" | tr -d ' ')
+    (( $(stat -c %Y "$clog") < $(date +%s) - ${age:-0} - 60 )) && return 0
+    grep -q "Server startup complete" "$clog" && return 0
+    if (( ${age:-0} >= OXIDE_LOAD_TIMEOUT )); then
+        log "No 'Server startup complete' after $(( ${age:-0} / 60 )) min of uptime: not waiting for it any longer"
+        return 0
+    fi
+    return 1
+}
+
+# Wait until the server has finished loading: RCON answers AND startup_complete. RCON alone is
 # not enough: it answers between bootstrap steps while the world is still loading (2026-11-07
 # test: RCON at 17:01:58, startup complete ~17:03), so "wipe is live" went out early and the "+N"
-# opening mark was counted from that moment. Returns 1 on timeout, 2 if the process died meanwhile.
+# opening mark was counted from that moment. The timeout is wall-clock (a silent RCON call can
+# take 30 s itself). Returns 0 ready, 1 timeout, 2 if the process died meanwhile.
 wait_for_rcon() {
-    local waited=0 t0 clog
+    local t0
     t0=$(date +%s)
-    clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
     log "Waiting for RCON and 'Server startup complete' (up to $((OXIDE_LOAD_TIMEOUT/60)) min)..."
-    until rcon_command serverinfo >/dev/null 2>&1 && { [ ! -f "$clog" ] || grep -q "Server startup complete" "$clog"; }; do
+    until rcon_command serverinfo >/dev/null 2>&1 && startup_complete; do
         is_server_running || { log "Server process died while loading"; return 2; }
-        (( waited >= OXIDE_LOAD_TIMEOUT )) && { log "RCON timeout"; return 1; }
+        (( $(date +%s) - t0 >= OXIDE_LOAD_TIMEOUT )) && { log "Timeout: RCON does not answer"; return 1; }
         sleep 15
-        waited=$((waited + 15))
     done
     log "Server ready (RCON + startup complete) after $(( ($(date +%s) - t0) / 60 )) min"
     return 0
@@ -383,11 +403,13 @@ oxide_loaded() {
     rcon_command "oxide.version" 2>/dev/null | grep -q "Oxide"
 }
 
-# After a start: make sure the server came up with Oxide; if not, roll Managed/
-# back to the copy taken before the Oxide update and start again.
+# After a start: wait until the server has loaded (always: the announcement and the "+N" mark
+# depend on it), then make sure it came up with Oxide; if not, roll Managed/ back to the copy
+# taken before the Oxide update and start again. SERVER_READY=true once it has fully loaded.
+SERVER_READY=false
 check_oxide_after_start() {
-    [[ "$OXIDE_CHECK_ENABLED" != "true" ]] && return 0
     local why rc
+    SERVER_READY=false
     wait_for_rcon; rc=$?
     # A game crash while loading is NOT an Oxide failure (2026-11-05: the depot was mid-publish,
     # a plain restart worked, but the rollback of Managed/ made things worse). Restart up to
@@ -407,6 +429,10 @@ check_oxide_after_start() {
     elif [ "$rc" -eq 1 ]; then
         send_telegram "$(msg not_ready)" "error"
         return 1
+    fi
+    SERVER_READY=true
+    if [[ "$OXIDE_CHECK_ENABLED" != "true" ]]; then
+        return 0
     elif oxide_loaded; then
         log "Oxide loaded: $(rcon_command oxide.version 2>/dev/null | head -1)"
         return 0
@@ -423,7 +449,9 @@ check_oxide_after_start() {
     sleep 5
     local managed_dir="$SERVERFILES_DIR/RustDedicated_Data/Managed"
     rm -rf "$managed_dir" && cp -r "$OXIDE_BACKUP" "$managed_dir"
+    SERVER_READY=false
     if start_server && wait_for_rcon; then
+        SERVER_READY=true
         send_telegram "$(msg oxide_rolled_back)" "error"
         return 0
     fi
@@ -492,7 +520,8 @@ mode_restart() {
     reboot_if_required
     if start_server; then
         check_oxide_after_start
-        send_telegram "$(msg restart_done)" "success"
+        # the failure of the check has already been reported; "completed" only for a loaded server
+        $SERVER_READY && send_telegram "$(msg restart_done)" "success"
     else
         exit 1
     fi
@@ -570,8 +599,8 @@ mode_wipe() {
     set_wipe_name
     if start_server; then
         check_oxide_after_start
-        if ! is_server_running; then
-            log "Server is not running after the wipe: no announcement, gate stays closed for the tick safety net"
+        if ! is_server_running || ! $SERVER_READY; then
+            log "Server is not running or not loaded after the wipe: no announcement, the gate stays closed and the tick opens it once the server is up"
             exit 1
         fi
         send_telegram "$(msg wipe_live)" "success"
@@ -579,7 +608,6 @@ mode_wipe() {
         exit 1
     fi
     if [ -n "$open_unix" ]; then
-        wait_for_rcon >/dev/null
         if (( round > 0 )); then
             open_unix=$(( ($(date +%s) / (round * 60) + 1) * round * 60 ))
             echo "$open_unix $(cut -d' ' -f2 "$GATE_FILE")" > "$GATE_FILE"
@@ -644,8 +672,13 @@ GATE_FILE="$STATE_DIR/gate"
 # scan the browser for fresh servers. LGSM passes servername as +server.hostname at start.
 set_wipe_name() {
     [[ "$SERVERNAME_WIPE_DATE" == "true" && -n "$SERVERNAME_BASE" ]] || return 0
-    local name="$SERVERNAME_BASE | WIPE $(date +%d.%m)"
-    sed -i "s/^servername=\".*\"/servername=\"$name\"/" "$LGSM_CFG"
+    local name="$SERVERNAME_BASE | WIPE $(date +%d.%m)" esc
+    if ! grep -q '^servername="' "$LGSM_CFG"; then
+        log "Server name: no servername= line in $LGSM_CFG, name left as is"
+        return 0
+    fi
+    esc=$(printf '%s' "$name" | sed 's/[\\/&]/\\&/g')
+    sed -i "s/^servername=\".*\"/servername=\"$esc\"/" "$LGSM_CFG"
     log "Server name: $name"
 }
 
@@ -668,9 +701,8 @@ gate_open() {
         log "Gate: server is not running, gate stays closed (will retry)"
         return 1
     fi
-    local clog cur
-    clog="$(dirname "$LGSM_SCRIPT")/log/console/$LGSM_SELFNAME-console.log"
-    if [ -f "$clog" ] && ! grep -q "Server startup complete" "$clog"; then
+    local cur
+    if ! startup_complete; then
         log "Gate: 'Server startup complete' not seen yet (will retry)"
         return 1
     fi
@@ -709,7 +741,8 @@ open_time_today() {
 # ---- Wipe timer: Rust shows "next wipe in ..." in the server browser. Feed it the real
 # next wipe from this schedule through wipetimer.wipeunixtimestampoverride.
 next_wipe_unix() {
-    local best="" d ts day dow
+    local best="" d ts day dow since
+    since=$(days_since_map_wipe)
     for ((d=0; d<=62; d++)); do
         day=$(date -d "today +$d day" +%F)
         dow=$(date -d "$day" +%u)
@@ -720,7 +753,8 @@ next_wipe_unix() {
             local dom from to
             dom=$(date -d "$day" +%-d)
             from=${MAPWIPE_MONTH_DAYS%-*}; to=${MAPWIPE_MONTH_DAYS#*-}
-            if [ -z "$MAPWIPE_MONTH_DAYS" ] || (( dom >= from && dom <= to )); then
+            if { [ -z "$MAPWIPE_MONTH_DAYS" ] || (( dom >= from && dom <= to )); } &&
+               (( since + d >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); then
                 if [ -n "$MAPWIPE_OPEN_TIME" ]; then
                     ts=$(date -d "$day $MAPWIPE_OPEN_TIME" +%s)
                 else
@@ -740,8 +774,11 @@ wipetimer_check() {
     next=$(next_wipe_unix)
     [ -z "$next" ] && return 0
     pid=$(pgrep -x RustDedicated | head -1)
+    [ -n "$pid" ] || return 0
     # leave a loading server alone (RCON is not up yet, every try would wait 30 s)
-    (( $(ps -o etimes= -p "$pid" | tr -d ' ') < 900 )) && return 0
+    local age
+    age=$(ps -o etimes= -p "$pid" | tr -d ' ')
+    (( ${age:-0} < 900 )) && return 0
     stamp="$next $pid"
     [[ "$(cat "$STATE_DIR/wipetimer" 2>/dev/null)" == "$stamp" ]] && return 0
     rcon_command "wipetimer.wipeunixtimestampoverride $next" >/dev/null 2>&1 || return 0
