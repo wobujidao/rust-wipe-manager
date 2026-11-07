@@ -9,6 +9,11 @@ config.env
 logs/
 *.log
 
+# Runtime state next to manager.sh
+.state/
+.manager.lock
+.poweroff-once
+
 # OS files
 .DS_Store
 Thumbs.db

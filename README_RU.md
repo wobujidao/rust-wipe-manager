@@ -1,730 +1,634 @@
 <div align="center">
 
-# 🦀 Rust Wipe Manager
+# Rust Wipe Manager
 
-### Готовый к продакшену набор автоматизации для Rust-серверов на LinuxGSM
+**Вайпы, рестарты и обновления [Rust](https://rust.facepunch.com/)-сервера на [LinuxGSM](https://linuxgsm.com/) без вашего участия, с отчётами в Telegram.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Bash](https://img.shields.io/badge/Bash-4EAA25?style=flat&logo=gnubash&logoColor=white)](https://www.gnu.org/software/bash/)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/)
-[![systemd](https://img.shields.io/badge/systemd-000000?style=flat&logo=linux&logoColor=white)](https://systemd.io/)
-[![LinuxGSM](https://img.shields.io/badge/LinuxGSM-0066CC?style=flat&logo=linux&logoColor=white)](https://linuxgsm.com/)
-[![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://telegram.org/)
-[![Rust Game](https://img.shields.io/badge/Rust-CD412B?style=flat&logo=rust&logoColor=white)](https://rust.facepunch.com/)
+[![License: MIT](https://img.shields.io/github/license/wobujidao/rust-wipe-manager?color=blue)](LICENSE)
+[![Shell: Bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](manager.sh)
+[![LinuxGSM](https://img.shields.io/badge/LinuxGSM-rustserver-0066CC)](https://linuxgsm.com/)
+[![Platform: Ubuntu 24.04](https://img.shields.io/badge/platform-Ubuntu%2024.04-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![Last commit](https://img.shields.io/github/last-commit/wobujidao/rust-wipe-manager)](https://github.com/wobujidao/rust-wipe-manager/commits)
 
-**Ежедневные рестарты • Умный Full Wipe • Необязательные вайпы карты • Сторож • Детектор обновлений • Telegram-алерты • Самовосстановление**
-
-[🇬🇧 English](README.md) • [Возможности](#-возможности) • [Как работает](#-как-это-работает) • [Установка](#-установка) • [Конфигурация](#%EF%B8%8F-конфигурация) • [Решение проблем](#-решение-проблем)
+[English](README.md) | **Русский**
 
 </div>
 
----
+Содержать Rust-сервер значит жить по календарю. Каждый день нужны рестарт и обновления. В первый четверг месяца Facepunch выпускает принудительное обновление в 19:00 по Лондону, и к этому моменту сервер должен быть остановлен, вайпнут, обновлён, загружен и вовремя открыт для игроков. На новой сборке может сломаться Oxide. А ещё серверы падают и зависают в три часа ночи.
 
-## 📖 Обзор
+Rust Wipe Manager берёт всё это на себя и запускается одной строкой в cron. Расписание вы описываете в одном конфиге, скрипт делает работу и сообщает о каждом шаге в Telegram, а встроенный сторож поднимает сервер, если он упал. Это один Bash-скрипт, которому не нужно ничего сверх того, что и так есть на хосте с LinuxGSM. Он написан и работает на боевом сервере (Ubuntu 24.04, виртуалка Proxmox, LinuxGSM, uMod/Oxide).
 
-**Rust Wipe Manager** — это полный набор автоматизации для серверов [Rust](https://rust.facepunch.com/), работающих на [LinuxGSM](https://linuxgsm.com/). Он берёт на себя всю рутину администрирования Rust-сервера: ежедневные рестарты, ежемесячные Full Wipe, синхронизированные с циклом обновлений Facepunch, восстановление после крашей, обновления ОС и подробные Telegram-уведомления на каждом шаге.
+## Содержание
 
-Тулкит написан и проверен в боевых условиях на реальном production-сервере (`bzod.ru`), работающем на **Ubuntu 24.04 LTS** + **Proxmox VM** + **LinuxGSM** + **uMod (Oxide)**.
+- [Возможности](#возможности)
+- [Быстрый старт](#быстрый-старт)
+- [Требования](#требования)
+- [Установка](#установка)
+- [Справочник по настройкам](#справочник-по-настройкам)
+- [Команды](#команды)
+- [Как это работает](#как-это-работает)
+- [Сообщения в Telegram](#сообщения-в-telegram)
+- [Решение проблем](#решение-проблем)
+- [Участие в разработке](#участие-в-разработке)
+- [Лицензия](#лицензия)
 
-## ✨ Возможности
+## Возможности
 
-### 🔄 Умные ежедневные рестарты
-- Запускается в `DAILY_RESTART_TIME` (по умолчанию 04:30 по времени ВМ) — отдельная строка в cron не нужна
-- Предупреждение игроков через RCON с обратным отсчётом (по умолчанию 30 минут)
-- Корректное завершение работы с фолбэком на `systemctl stop` если процесс завис
-- Автоматическое обновление Rust + Oxide во время рестарта
-- Обновление пакетов ОС (`unattended-upgrade`) в том же окне, пока сервер остановлен
-- Перезагружает ВМ вместо запуска сервера, если этого требует ОС (systemd-юнит поднимает Rust при загрузке)
-- Одноразовый флаг выключения (`.poweroff-once`) для обслуживания на стороне хоста
-- Проверка Oxide после каждого запуска с автоматическим откатом, если Oxide не загрузился
-- Сам пропускает себя в день Full Wipe, чтобы избежать конфликта
+**Расписание**
+- Одна строка в cron, `manager.sh tick` раз в минуту, запускает всё расписание из `config.env`. Время и интервалы меняются в конфиге, cron трогать не нужно.
+- **Ежедневный рестарт** с отсчётом для игроков через RCON, обновлением Rust и Oxide и обновлением ОС, пока сервер остановлен.
+- **Full Wipe** в первый четверг месяца: стартует до выхода обновления Facepunch, дожидается, пока оно действительно появится в Steam, затем вайпает карту и чертежи.
+- **Вайпы карты** между принудительными вайпами: в выбранный день недели, раз в N недель, при желании только в заданные числа месяца. Чертежи остаются.
+- Каждое событие срабатывает раз в сутки в пределах окна. Если машина в это время была выключена, событие пропускается, а не запускается на несколько часов позже.
 
-### 🔥 Автоматический Full Wipe в первый четверг каждого месяца
-- Синхронизируется с официальным расписанием патчей Facepunch (19:00 по Лондону)
-- Стартует сам в момент (лондонский час − время подготовки) в рамках трёхчасового окна
-- **Ждёт реального появления апдейта в Steam** перед вайпом (риск вайпа на старой версии исключён)
-- Опрашивает Steam каждые 2 минуты, до 2 часов
-- Прерывает вайп с критическим Telegram-алертом, если апдейт не вышел вовремя
-- Ручной `fullwipe-now` **не ждёт**: обновляется, если апдейт есть, и вайпает в любом случае
-- Новый случайный сид карты при каждом Full Wipe (это делает LinuxGSM, если `seed` пустой, см. [Сид карты](#-сид-карты))
-- Бэкапит директорию Oxide `Managed/` перед обновлением
+**После вайпа**
+- **Шлюз открытия**: сервер поднимается с `maxplayers 0`, игроки ждут в штатной очереди Rust, а в нужный момент (точное время или ближайшая отметка в N минут после загрузки) сервер открывается.
+- **Имя сервера с датой вайпа** (`My Rust Server | WIPE 06.11`) и **настоящее время следующего вайпа в браузере серверов**.
+- Сообщение «новый вайп» уходит, только когда сервер действительно загрузился: RCON отвечает *и* в консольном логе есть `Server startup complete`.
 
-### 🗺️ Необязательные вайпы карты между месячными Full Wipe
-- Раз в неделю, раз в две недели и т. д. в выбранный день и время (`MAPWIPE_*`), по умолчанию выключены
-- Используют LGSM `map-wipe`: только карта, чертежи остаются, новый случайный сид
-- Никогда не ждут апдейт Facepunch; интервал считается от последнего вайпа любого вида, поэтому совпадает с принудительным месячным
-- В день Full Wipe пропускаются
+**Страховки**
+- **Проверка Oxide** после каждого запуска с откатом `Managed/` на копию, сделанную перед обновлением Oxide. Вылет игры во время загрузки перезапускается и не принимается за поломку Oxide.
+- **Сторож (watchdog)**: перезапускает упавший или зависший сервер, сдаётся после слишком частых перезапусков за час и не трогает сервер, который вы остановили сами.
+- **Обслуживание ОС** в окне рестарта: `unattended-upgrade`, перезагрузка, если её просит система, отчёт после загрузки и одноразовый флаг выключения для работ на стороне хоста.
+- Один запуск за раз (`flock`), секреты отдельно от конфига.
 
-### 🗓️ Одна строка cron, расписание в `config.env`
-- `* * * * * manager.sh tick` каждую минуту читает `config.env` и запускает то, что подошло по времени: ежедневный рестарт, Full Wipe, вайп карты — иначе сторожа
-- Время, дни и интервалы меняются в `config.env`, cron трогать не нужно
-- Каждое событие срабатывает раз в сутки в пределах окна; ВМ, которая была выключена в это время, пропускает событие, а не запускает его на несколько часов позже
-- Одновременно работает только один запуск (`flock`): второй ручной запуск отменяется с алертом в Telegram
+**Telegram**
+- Три уровня подробности, сообщения на русском или английском, обычный текст, в котором `+` и `_` доходят без искажений.
 
-### 🐕 Сторож (watchdog)
-- Перезапускает упавший сервер и зависший (процесс жив, но RCON молчит несколько минут подряд)
-- Уважает штатную остановку (`./rustserver stop`, `systemctl stop rustserver`) и никогда её не перезапускает
-- Сдаётся и один раз шлёт алерт, если сервер продолжает падать (`WATCHDOG_MAX_RESTARTS` в час)
+## Быстрый старт
 
-### 🧩 Страховка для Oxide
-- После каждого запуска (ежедневный рестарт и вайпы) ждёт RCON и проверяет `oxide.version`
-- Если Oxide не загрузился или сервер умер во время загрузки: остановка, восстановление `Managed/` из бэкапа, сделанного перед обновлением Oxide в этом запуске, новый старт, алерт
+Для хоста, на котором уже работает Rust-сервер на LinuxGSM под управлением systemd (если ещё нет, смотрите [Установку](#установка)):
 
-### 🛡️ Интеграция с systemd
-- Автозапуск при загрузке машины
-- Восстановление после краша и зависания встроенным сторожем (см. выше)
-- Логи доступны через `journalctl -u rustserver`
-- Чистый интерфейс `start`/`stop`/`restart`
+```bash
+git clone https://github.com/wobujidao/rust-wipe-manager.git ~/rust_server
+cd ~/rust_server && mkdir -p logs
+cp config.env.example config.env
+cp secrets.env.example .secrets.env && chmod 600 .secrets.env
+nano config.env .secrets.env        # пути, имя сервера, расписание, токен бота, пароль RCON
 
-### 📱 Telegram-уведомления на каждом шаге
-- Старт рестарта / RCON отправлен / сервер остановлен / обновления готовы / сервер поднят
-- После любой загрузки ВМ: сервер поднялся (с версией ядра) или не запустился (`post-boot`)
-- Три уровня логирования: `full` / `success_error` / `error_only`
-- Сообщения на английском или русском (`MESSAGES_LANG=en|ru`)
-- Отправляются как URL-кодированный обычный текст (без причуд Markdown: `+` и `_` доходят как есть)
-- Сообщение «новый вайп запущен» содержит новый сид карты
-- Критические алерты при сбоях (таймаут, ошибка обновления, сервер не запустился, откат Oxide, сторож сдался)
+./manager.sh test-telegram          # должно прийти сообщение
+./manager.sh check-update           # выведет "UPDATE AVAILABLE" или "No update" (код 2: сборки не прочитаны)
 
-### 🔐 Безопасность
-- Все секреты хранятся в отдельном файле `.secrets.env` с правами `chmod 600`
-- Sudo ограничен коротким списком команд: `systemctl` для сервиса, `apt-get update -qq`, `unattended-upgrade`, `reboot`, `poweroff`
-- Никаких credentials в основном скрипте — безопасно публиковать
-
-## 🏗️ Архитектура
-
-```mermaid
-graph TB
-    subgraph "🖥️ Хост Proxmox"
-        subgraph "🐧 Виртуалка Ubuntu"
-            CRON[⏰ cron]
-            SYSTEMD[⚙️ systemd]
-            MANAGER[📜 manager.sh]
-            LGSM[🎮 LinuxGSM]
-            RUST[🦀 RustDedicated]
-            OXIDE[🔧 Oxide/uMod]
-            OS[📦 Пакеты ОС]
-            CONF[📄 config.env]
-        end
-    end
-
-    TG[📱 Telegram Bot API]
-    STEAM[☁️ Steam / Facepunch]
-    PLAYERS[👥 Игроки]
-
-    CRON -->|"каждую минуту: tick"| MANAGER
-    CRON -->|"@reboot: post-boot"| MANAGER
-    CONF -.->|"расписание, переключатели"| MANAGER
-    SYSTEMD -->|"при загрузке/краше"| LGSM
-    MANAGER -->|"start/stop"| SYSTEMD
-    MANAGER -->|"RCON, проверка Oxide, сторож"| RUST
-    MANAGER -->|"check-update, map-wipe, full-wipe"| LGSM
-    MANAGER -->|"unattended-upgrade, reboot"| OS
-    MANAGER -->|"алерты"| TG
-    LGSM -->|"скачивание апдейтов"| STEAM
-    LGSM -->|"управление"| RUST
-    RUST -->|"хостит"| OXIDE
-    PLAYERS -.->|"подключение"| RUST
-
-    style MANAGER fill:#CD412B,color:#fff
-    style RUST fill:#CD412B,color:#fff
-    style TG fill:#26A5E4,color:#fff
-    style SYSTEMD fill:#000,color:#fff
+crontab -e                          # добавьте две строки ниже
 ```
 
-## 🎯 Как это работает
-
-### Планировщик (`tick`)
-
-```mermaid
-graph TD
-    TICK["⏰ cron: tick, каждую минуту"] --> LOCK{"другой запуск активен?"}
-    LOCK -->|"да"| EXIT["тихо выходим"]
-    LOCK -->|"нет"| FW{"первый четверг, окно Full Wipe?"}
-    FW -->|"да"| FWRUN["🔥 Full Wipe"]
-    FW -->|"нет"| MW{"подошёл день, время и интервал вайпа карты?"}
-    MW -->|"да"| MWRUN["🗺️ Вайп карты"]
-    MW -->|"нет"| DR{"наступило время ежедневного рестарта?"}
-    DR -->|"да"| DRRUN["🔄 Ежедневный рестарт"]
-    DR -->|"нет"| WD["🐕 Сторож"]
+```cron
+* * * * * /home/YOUR_USERNAME/rust_server/manager.sh tick >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
+@reboot   /home/YOUR_USERNAME/rust_server/manager.sh post-boot >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
 ```
 
-`tick` перечитывает `config.env` при каждом запуске. Время — локальное время ВМ.
+Готово: теперь расписание живёт в `config.env`. Вайпы карты и шлюз открытия по умолчанию выключены, см. [Справочник по настройкам](#справочник-по-настройкам).
 
-- **Ежедневный рестарт** — в `DAILY_RESTART_TIME`.
-- **Full Wipe** — первый четверг, начиная с (`FULLWIPE_LONDON_HOUR` по Лондону − `FULLWIPE_PRE_WAIT_MINUTES`), в пределах трёхчасового окна.
-- **Вайп карты** — в день `MAPWIPE_DAY` (1=пн … 7=вс) в `MAPWIPE_TIME`, раз в `MAPWIPE_INTERVAL_WEEKS`, считая от последнего вайпа любого вида (время изменения самого свежего файла `*.map`), и только в дни месяца `MAPWIPE_MONTH_DAYS`, если они заданы. В день Full Wipe пропускается.
-- **Раз в сутки в пределах окна** — каждое событие срабатывает раз в сутки в пределах окна (1 час для рестарта и вайпа карты, 3 часа для Full Wipe). ВМ, выключенная в это время, пропускает событие, а не запускает его на несколько часов позже. Отметки «выполнено» лежат в `.state/done-*`.
-- **Иначе** — `tick` запускает сторожа.
-- **Старые команды** — `restart` сразу выполняет ежедневный рестарт; `fullwipe` — прежняя запись для cron (Full Wipe только в первый четверг).
+## Требования
 
-### Сценарий ежедневного рестарта
+- Linux с **systemd** и **cron**. Разрабатывалось и работает на Ubuntu 24.04 LTS, дистрибутивы на базе Debian должны подойти.
+- Рабочий **LinuxGSM** `rustserver` с установленным **Oxide/uMod**: скрипт управляет сервером командами LGSM.
+- [**rcon-cli**](https://github.com/gorcon/rcon-cli) от gorcon (скрипт использует WebRCON, который LGSM включает по умолчанию).
+- Обычные утилиты: `bash`, `curl`, `flock`, `pgrep`, `awk`, `sed`, GNU `date`/`find`/`stat`.
+- **Telegram-бот** (необязательно, но рекомендуется): создаётся у [@BotFather](https://t.me/BotFather).
+- Права `sudo` у пользователя сервера, ограниченные коротким списком команд (шаг 4 ниже).
 
-```mermaid
-sequenceDiagram
-    participant C as ⏰ cron tick (04:30 локальное)
-    participant M as 📜 manager.sh
-    participant R as 🦀 Rust сервер
-    participant S as ⚙️ systemd
-    participant T as 📱 Telegram
+## Установка
 
-    C->>M: tick в DAILY_RESTART_TIME
-    M->>M: Сегодня первый четверг?
-    alt Да (день Full Wipe)
-        M->>T: "Пропускаю ежедневный рестарт"
-        M-->>C: exit 0
-    else Нет (обычный день)
-        M->>T: "Начало ежедневного рестарта"
-        M->>R: RCON "restart 1800 server_restart"
-        Note over R: Игроки видят отсчёт<br/>30 минут
-        R->>R: Игроки предупреждены, отсчёт
-        M->>M: sleep 1800 сек
-        R->>S: сервер остановлен
-        M->>T: "Сервер остановлен"
-        M->>M: ./rustserver update
-        M->>M: ./rustserver mods-update
-        M->>T: "Обновления готовы"
-        M->>M: apt-get update + unattended-upgrade
-        M->>T: "Обновления ОС установлены"
-        alt Есть флаг .poweroff-once
-            M->>T: "ВМ выключается для обслуживания хоста"
-            M->>S: sudo poweroff (хост запустит ВМ снова)
-        else Есть /var/run/reboot-required
-            M->>T: "Обновлению ОС нужна перезагрузка"
-            M->>S: sudo reboot (Rust стартует при загрузке)
-        else Ничего не требуется
-            M->>S: systemctl start rustserver
-            S->>R: запуск сервера
-            M->>M: проверка процесса RustDedicated
-            M->>R: ждём RCON, проверяем oxide.version
-            M->>T: "✅ Рестарт завершён"
-        end
-    end
-```
-
-Шаги обслуживания ОС (`update_system`, `reboot_if_required`) выполняются после обновления Rust/Oxide, пока сервер остановлен:
-
-- **Обновления ОС** — `apt-get update -qq` + `unattended-upgrade`, включаются параметром `SYSTEM_UPDATE_ENABLED`. Что именно ставится — настройка самой Ubuntu (`Unattended-Upgrade::Allowed-Origins` в `/etc/apt/apt.conf.d/50unattended-upgrades`; по умолчанию обновления безопасности), а это окно определяет только *когда*. Чтобы обновления ставились только здесь, отключи штатный таймер apt (см. «Установка», шаг 4). Лог: `/var/log/unattended-upgrades/unattended-upgrades.log`.
-- **Перезагрузка** — параметр `REBOOT_IF_REQUIRED`. Если есть `/var/run/reboot-required`, ВМ перезагружается вместо запуска сервера; systemd-юнит поднимает Rust при загрузке.
-- **Одноразовое выключение** — `touch ~/rust_server/.poweroff-once`: при ближайшем ежедневном рестарте ВМ выключится вместо запуска сервера (для обслуживания на стороне хоста, например `qm enroll-efi-keys <vmid>` в Proxmox, которому нужна выключенная ВМ). Флаг удаляется при использовании, а запустить ВМ снова должен хост.
-
-### Отчёт после загрузки
-
-```mermaid
-sequenceDiagram
-    participant C as ⏰ cron (@reboot)
-    participant M as 📜 manager.sh
-    participant R as 🦀 Rust сервер
-    participant T as 📱 Telegram
-
-    C->>M: запуск режима "post-boot"
-    loop Каждые 10 секунд (макс SERVER_START_TIMEOUT)
-        M->>R: RustDedicated запущен?
-    end
-    alt Процесс найден
-        M->>T: "✅ ВМ загружена, сервер работает (версия ядра)"
-    else Таймаут
-        M->>T: "❌ ВМ загружена, но сервер не запустился"
-    end
-```
-
-### Сценарий Full Wipe
-
-```mermaid
-sequenceDiagram
-    participant C as ⏰ cron tick (каждую минуту)
-    participant M as 📜 manager.sh
-    participant FP as ☁️ Facepunch/Steam
-    participant R as 🦀 Rust сервер
-    participant T as 📱 Telegram
-
-    C->>M: tick
-    M->>M: Первый четверг и окно Full Wipe?
-    alt Нет
-        M-->>C: делать нечего
-    else Да (раз в сутки)
-        M->>M: Окно открывается за 30 мин до 19:00 по Лондону<br/>(BST/GMT автоматически, окно 3 ч)
-        M->>T: "🔥 Подготовка к Full Wipe"
-        M->>R: RCON "restart 600 FULL_WIPE_UPDATE"
-        Note over R: Отсчёт 10 минут
-        M->>M: sleep 600 сек
-        R->>R: сервер остановлен
-
-        Note over M,FP: Ручной "fullwipe-now" пропускает цикл ожидания<br/>(обновляется, если апдейт есть, и вайпает в любом случае)
-        loop Каждые 2 минуты (макс 2ч)
-            M->>FP: check-update (сравнение builds)
-            alt Апдейт доступен
-                M->>T: "🎉 Апдейт обнаружен!"
-            else Апдейта пока нет
-                M->>M: sleep 120 сек
-            end
-        end
-
-        alt Таймаут (нет апдейта 2 часа)
-            M->>T: "🚨 ТАЙМАУТ! Нужно ручное вмешательство"
-            M-->>C: exit 1
-        else Апдейт найден
-            M->>M: бэкап Oxide Managed/
-            M->>FP: ./rustserver update
-            M->>FP: ./rustserver mods-update
-            M->>R: ./rustserver full-wipe
-            Note over R: Карта + blueprints<br/>сброшены
-            M->>R: systemctl start rustserver
-            M->>R: ждём RCON, проверяем oxide.version
-            M->>T: "🎉 Новый вайп запущен! (новый сид)"
-        end
-    end
-```
-
-> 💡 Цикл ожидания относится к плановому Full Wipe (первый четверг). Ручной `fullwipe-now` и вайпы карты не ждут Facepunch: они выполняют `./rustserver update` (тот обновляет, только если вышла новая сборка) и затем вайпают в любом случае.
-
-### Вайп карты
-
-Включается через `MAPWIPE_ENABLED="true"`. В день `MAPWIPE_DAY` в `MAPWIPE_TIME` начинается отсчёт (`FULLWIPE_COUNTDOWN`), сервер останавливается, Rust и Oxide обновляются, если вышли апдейты, затем запускается LGSM `map-wipe` (чертежи остаются, новый случайный сид, как и у `full-wipe`), сервер стартует, выполняется проверка Oxide и приходит сообщение «новый вайп запущен» с сидом. Апдейта Facepunch он никогда не ждёт. Запустить вручную: `./manager.sh mapwipe-now`.
-
-### Проверка Oxide после каждого запуска
-
-```mermaid
-sequenceDiagram
-    participant M as 📜 manager.sh
-    participant R as 🦀 Rust сервер
-    participant T as 📱 Telegram
-
-    M->>R: запуск сервера
-    loop до OXIDE_LOAD_TIMEOUT
-        M->>R: RCON serverinfo
-    end
-    alt RCON отвечает и oxide.version в порядке
-        M->>T: сообщение об успехе
-    else RCON так и не ответил
-        M->>T: "RCON молчит, Oxide не проверен"
-    else Процесс умер или Oxide не загрузился
-        M->>T: "Oxide не загрузился, откатываю"
-        M->>R: остановка, восстановление Managed/ из бэкапа, запуск
-        M->>T: "Откат сделан, сервер запущен"
-    end
-```
-
-- Управляется `OXIDE_CHECK_ENABLED`. Бэкап — это копия `Managed.backup-<дата>`, сделанная прямо перед обновлением Oxide в этом запуске, поэтому если Oxide в запуске не обновлялся, откатываться не к чему (придёт алерт).
-- ⚠️ Если в том же запуске обновился сам Rust, эта копия «чистая» (без Oxide): сервер будет работать без плагинов, пока uMod не выпустит исправление.
-- `OXIDE_LOAD_TIMEOUT` должен покрывать генерацию карты после вайпа — на слабом железе она может занимать больше 10 минут.
-
-### Сторож (watchdog)
-
-```mermaid
-graph TD
-    W["🐕 Сторож (внутри tick)"] --> B{"загрузка была меньше 10 мин назад или есть starting.lock?"}
-    B -->|"да"| SKIP["пропуск"]
-    B -->|"нет"| L{"есть started.lock?"}
-    L -->|"нет, штатная остановка"| NEVER["не перезапускается"]
-    L -->|"да"| P{"RustDedicated запущен?"}
-    P -->|"нет"| CR["💥 упал"]
-    P -->|"да"| H{"старше WATCHDOG_GRACE и RCON молчит WATCHDOG_HANG_CHECKS минут подряд?"}
-    H -->|"да"| HU["🧊 завис"]
-    H -->|"нет"| OK["здоров"]
-    CR --> LIM{"меньше WATCHDOG_MAX_RESTARTS в час?"}
-    HU --> LIM
-    LIM -->|"да"| RS["перезапуск и алерт"]
-    LIM -->|"нет"| GU["сдаётся, один алерт"]
-```
-
-- Работает внутри `tick` каждую минуту (или вручную: `./manager.sh watchdog`).
-- **Упавший** сервер — это отсутствие процесса `RustDedicated` при наличии `lgsm/lock/rustserver-started.lock` у LGSM. **Зависший** — процесс старше `WATCHDOG_GRACE`, у которого RCON `serverinfo` молчит `WATCHDOG_HANG_CHECKS` минут подряд.
-- Штатная остановка (`./rustserver stop` или `systemctl stop rustserver`) удаляет `started.lock`, поэтому сервер не перезапускается. Команда `quit` из консоли или RCON оставляет файл, и сторож перезапускает сервер — см. «Решение проблем».
-- Он пропускает первые 10 минут после загрузки (этим занимается `post-boot`) и всё время, пока у LGSM есть `starting.lock`.
-- После `WATCHDOG_MAX_RESTARTS` перезапусков за час он сдаётся и шлёт один алерт; `.state/gave_up` очищается, когда сервер снова здоров.
-
-### Один запуск за раз и логи
-
-- `manager.sh` берёт `flock` на `.manager.lock`. Второй ручной или cron-запуск отменяется с алертом в Telegram; `tick` и `watchdog` при занятом замке молча выходят. LGSM и rcon запускаются с закрытым файловым дескриптором 9, поэтому замок не «утекает» в tmux.
-- Файлы `manager-*.log` старше `LOG_KEEP_DAYS` удаляются; `cron.log` при достижении 10 МБ переименовывается в `cron.log.1`.
-
-## 🛠️ Технологии
-
-| Компонент | Назначение |
-|---|---|
-| ![Bash](https://img.shields.io/badge/-Bash-4EAA25?logo=gnubash&logoColor=white) | Основной язык скриптов |
-| ![Ubuntu](https://img.shields.io/badge/-Ubuntu_24.04-E95420?logo=ubuntu&logoColor=white) | Хостовая ОС |
-| ![systemd](https://img.shields.io/badge/-systemd-000000?logo=linux&logoColor=white) | Управление сервисами и автозапуск |
-| ![LinuxGSM](https://img.shields.io/badge/-LinuxGSM-0066CC?logo=linux&logoColor=white) | Обёртка для игрового сервера |
-| ![Rust](https://img.shields.io/badge/-Rust_Game-CD412B?logo=rust&logoColor=white) | Сама игра |
-| ![Oxide](https://img.shields.io/badge/-uMod/Oxide-7B68EE) | Фреймворк плагинов |
-| ![cron](https://img.shields.io/badge/-cron-008000) | Планировщик задач |
-| ![rcon-cli](https://img.shields.io/badge/-rcon--cli-FF6B6B) | RCON-клиент |
-| ![Telegram](https://img.shields.io/badge/-Telegram_Bot_API-26A5E4?logo=telegram&logoColor=white) | Уведомления |
-
-## 📋 Требования
-
-- **ОС**: Ubuntu 24.04 LTS (или любой современный Debian-based дистрибутив с systemd)
-- **LinuxGSM** установлен и `rustserver` настроен в `~/rustserver`
-- **Rust dedicated server** работает через LGSM
-- **systemd** (есть во всех современных дистрибутивах)
-- **rcon-cli** от gorcon: [github.com/gorcon/rcon-cli](https://github.com/gorcon/rcon-cli)
-- **Telegram-бот** (опционально, но рекомендуется) — токен у [@BotFather](https://t.me/BotFather)
-- **sudo** права для пользователя сервера (ограниченные `systemctl`, `apt-get update -qq`, `unattended-upgrade`, `reboot`, `poweroff`)
-
-## 🚀 Установка
-
-### 1️⃣ Установить LinuxGSM и Rust-сервер
+### 1. LinuxGSM, Rust-сервер и Oxide
 
 ```bash
 curl -Lo linuxgsm.sh https://linuxgsm.sh && chmod +x linuxgsm.sh && bash linuxgsm.sh rustserver
 ./rustserver auto-install
+./rustserver mods-install        # выберите Oxide
 ```
 
-### 2️⃣ Установить rcon-cli
+В `lgsm/config-lgsm/rustserver/rustserver.cfg` оставьте `seed=""` (тогда LGSM выбирает новый случайный сид при каждом вайпе) и строку `maxplayers="N"` (она нужна шлюзу открытия).
+
+### 2. rcon-cli
 
 ```bash
 cd ~
 wget https://github.com/gorcon/rcon-cli/releases/download/v0.10.3/rcon-0.10.3-amd64_linux.tar.gz
-tar -xzf rcon-0.10.3-amd64_linux.tar.gz
-rm rcon-0.10.3-amd64_linux.tar.gz
+tar -xzf rcon-0.10.3-amd64_linux.tar.gz && rm rcon-0.10.3-amd64_linux.tar.gz
 ```
 
-### 3️⃣ Настроить systemd-сервис
+### 3. Юнит systemd
 
-Создать `/etc/systemd/system/rustserver.service`:
+Скопируйте [`rustserver.service`](rustserver.service) в `/etc/systemd/system/`, замените `YOUR_USERNAME` и выполните:
 
-```ini
-[Unit]
-Description=Rust Server (LinuxGSM)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-User=YOUR_USERNAME
-Group=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME
-ExecStart=/home/YOUR_USERNAME/rustserver start
-ExecStop=/home/YOUR_USERNAME/rustserver stop
-TimeoutStartSec=600
-TimeoutStopSec=300
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Включить и запустить:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable rustserver
-sudo systemctl start rustserver
+sudo systemctl enable --now rustserver
 ```
 
-> ⚠️ **Почему `Type=oneshot`, а не `Type=forking`?** LinuxGSM использует tmux внутри и отделяет процесс. С `Type=forking` systemd теряет связь с реальным процессом сервера. `Type=oneshot` + `RemainAfterExit=yes` — самое чистое решение, которое надёжно работает с LGSM.
+> **Почему `Type=oneshot`, а не `forking`?** LinuxGSM запускает сервер внутри tmux и отсоединяет его, поэтому при `forking` systemd теряет настоящий процесс. Связка `oneshot` и `RemainAfterExit=yes` с LGSM работает надёжно.
 
-### 4️⃣ Настроить sudoers (sudo без пароля для systemctl, apt, reboot)
+### 4. sudoers
+
+Скрипту нужен `sudo` без пароля ровно для этих команд:
 
 ```bash
-echo 'YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/systemctl start rustserver, /usr/bin/systemctl stop rustserver, /usr/bin/systemctl restart rustserver, /usr/bin/apt-get update -qq, /usr/bin/unattended-upgrade, /usr/sbin/reboot, /usr/sbin/poweroff' | sudo tee /etc/sudoers.d/YOUR_USERNAME-rustserver
+echo 'YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/systemctl start rustserver, /usr/bin/systemctl stop rustserver, /usr/bin/apt-get update -qq, /usr/bin/unattended-upgrade, /usr/sbin/reboot, /usr/sbin/poweroff' | sudo tee /etc/sudoers.d/YOUR_USERNAME-rustserver
 sudo chmod 440 /etc/sudoers.d/YOUR_USERNAME-rustserver
+sudo visudo -cf /etc/sudoers.d/YOUR_USERNAME-rustserver
 ```
 
-**Рекомендуется:** отключить штатный таймер unattended-upgrade, чтобы обновления ОС ставились только в окне ежедневного рестарта, пока сервер остановлен. В `/etc/apt/apt.conf.d/20auto-upgrades` оставь обновление списка пакетов и выключи периодическую установку:
+Если вы используете `SYSTEM_UPDATE_ENABLED`, отключите ещё и собственные обновления Ubuntu в случайное время суток, чтобы обновления ставились только пока сервер остановлен. В `/etc/apt/apt.conf.d/20auto-upgrades`:
 
 ```
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "0";
 ```
 
-### 5️⃣ Скачать репозиторий
+### 5. Менеджер
 
 ```bash
-mkdir -p ~/rust_server
+git clone https://github.com/wobujidao/rust-wipe-manager.git ~/rust_server
 cd ~/rust_server
-wget https://raw.githubusercontent.com/wobujidao/rust-wipe-manager/main/manager.sh
-wget https://raw.githubusercontent.com/wobujidao/rust-wipe-manager/main/config.env.example -O config.env
-wget https://raw.githubusercontent.com/wobujidao/rust-wipe-manager/main/secrets.env.example -O .secrets.env
-chmod +x manager.sh
+mkdir -p logs                     # cron открывает cron.log раньше, чем скрипт успевает создать папку
+cp config.env.example config.env
+cp secrets.env.example .secrets.env
 chmod 600 .secrets.env
 ```
 
-### 6️⃣ Настроить секреты и конфиг
+`config.env`, `.secrets.env`, `logs/` и `.state/` внесены в `.gitignore`, поэтому `git pull` обновляет скрипт и не затрагивает ваши настройки.
 
-Отредактировать `.secrets.env` реальными значениями:
-```bash
-nano ~/rust_server/.secrets.env
-```
+### 6. Настройка
 
-```env
-TELEGRAM_BOT_TOKEN="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-TELEGRAM_CHAT_ID="-1001234567890"
-RCON_PASS="ваш_rcon_пароль"
-```
+- `.secrets.env`: `TELEGRAM_BOT_TOKEN` (от @BotFather), `TELEGRAM_CHAT_ID` (узнать можно у @userinfobot; у групп он отрицательный) и `RCON_PASS` (параметр `rconpassword` в `lgsm/config-lgsm/rustserver/secrets-rustserver.cfg`).
+- `config.env`: пути, имя сервера и расписание. Каждая настройка прокомментирована в [`config.env.example`](config.env.example) и перечислена в [справочнике](#справочник-по-настройкам).
 
-Отредактировать `config.env` под свои пути и предпочтения:
-```bash
-nano ~/rust_server/config.env
-```
-
-### 7️⃣ Протестировать
+### 7. Проверка
 
 ```bash
-~/rust_server/manager.sh test-telegram
-~/rust_server/manager.sh check-update
+~/rust_server/manager.sh test-telegram    # в Telegram приходит сообщение
+~/rust_server/manager.sh check-update     # выводит UPDATE AVAILABLE или No update
 ```
 
-Должно прийти сообщение в Telegram и вывестись информация о версиях из Steam.
+Вторую команду стоит выполнить и в окружении cron, см. [Решение проблем](#steamcmd-скачивается-заново-или-update-падает-только-из-cron).
 
-### 8️⃣ Добавить задачи в cron
+### 8. Cron
 
 ```bash
 crontab -e
 ```
 
-Добавить:
 ```cron
 * * * * * /home/YOUR_USERNAME/rust_server/manager.sh tick >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
-@reboot /home/YOUR_USERNAME/rust_server/manager.sh post-boot >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
+@reboot   /home/YOUR_USERNAME/rust_server/manager.sh post-boot >> /home/YOUR_USERNAME/rust_server/logs/cron.log 2>&1
 ```
 
-> 💡 `tick` запускается каждую минуту, читает `config.env` и запускает то, что подошло по времени: ежедневный рестарт в `DAILY_RESTART_TIME`, Full Wipe в первый четверг начиная с (`FULLWIPE_LONDON_HOUR` по Лондону − `FULLWIPE_PRE_WAIT_MINUTES`), необязательный вайп карты. Если ничего не подошло, запускается сторож. Подробности — в разделе [Планировщик](#планировщик-tick).
+`tick` каждую минуту читает `config.env` и запускает то, что подошло по времени; если ничего не подошло, запускает сторожа. `post-boot` после любой загрузки ВМ, в том числе после перезагрузок, которые инициирует сам менеджер, сообщает в Telegram, поднялся ли сервер. Все времена указаны по **местному времени ВМ** (`timedatectl`).
 
-> 🕒 Всё время — по **локальному часовому поясу ВМ**. Событие, пропущенное из-за выключенной ВМ, не запускается с опозданием на несколько часов, а пропускается.
+### Переход со старых версий
 
-> 📣 Запись `@reboot` запускает `post-boot` после каждой загрузки ВМ (включая перезагрузки и включения после ежедневного рестарта) и сообщает в Telegram, поднялся ли сервер.
+В старых версиях под каждую задачу была своя строка cron (`manager.sh restart` в 04:30 и `manager.sh fullwipe` по четвергам). Удалите их и добавьте строку с `tick`, иначе два запуска стартуют одновременно, и блокировка отменит один из них с алертом в Telegram. Старый `config.env` продолжит работать: настройки, появившиеся позже, получают встроенные значения по умолчанию, а нужные вам можно перенести из `config.env.example`. Если в нём всё ещё `OXIDE_LOAD_TIMEOUT=300`, поднимите значение до `900`, чтобы оно покрывало генерацию карты после вайпа. Команды `restart` и `fullwipe` по-прежнему работают.
 
-#### Переход со старых строк cron
+## Справочник по настройкам
 
-Старые версии использовали по строке cron на каждую задачу (`... manager.sh restart` в 04:30 и `... manager.sh fullwipe` по четвергам в 19:00). Удали обе и добавь строку `tick` выше, иначе два запуска стартуют одновременно, и замок отменит один из них с алертом в Telegram. Затем:
+Настройки лежат в `config.env` (если его или `.secrets.env` нет, скрипт завершится с ошибкой). Булевы значения: `"true"` / `"false"`. Длительности в секундах, если имя не говорит иного. Время в формате `ЧЧ:ММ` по местному времени ВМ.
 
-- Перенеси новые параметры из `config.env.example` в свой `config.env`. Старый `config.env` продолжит работать: недостающие параметры получают значения по умолчанию (ежедневный рестарт в 04:30, вайп карты выключен, обновления ОС и перезагрузка выключены, проверка Oxide и сторож включены).
-- Если в твоём `config.env` всё ещё `OXIDE_LOAD_TIMEOUT=300`, увеличь значение (новое по умолчанию — `900`), чтобы оно покрывало генерацию карты после вайпа.
-- `fullwipe` по-прежнему работает как устаревшая команда (только первый четверг), а `restart` по-прежнему сразу выполняет ежедневный рестарт.
+Столбец **По умолчанию** показывает, что скрипт подразумевает, если строки нет в `config.env`. Крестик (†) отмечает настройки без встроенного значения: строка должна остаться в `config.env`, а указано значение из `config.env.example`.
 
-## ⚙️ Конфигурация
+### Пути и RCON
 
-Все настройки находятся в `config.env`. [`config.env.example`](config.env.example) описывает каждый параметр прямо в файле — комментарий стоит над каждой строкой. Самые важные:
-
-| Параметр | По умолчанию | Описание |
+| Переменная | По умолчанию | Значение |
 |---|---|---|
-| `DAILY_RESTART_ENABLED` | `true` | Включить ежедневный рестарт |
-| `DAILY_RESTART_TIME` | `04:30` | Время ежедневного рестарта (по времени ВМ) |
-| `DAILY_RESTART_COUNTDOWN` | `1800` | Отсчёт перед ежедневным рестартом (секунд) |
-| `DAILY_RESTART_UPDATE_RUST` | `true` | Обновлять Rust при ежедневном рестарте |
-| `DAILY_RESTART_UPDATE_OXIDE` | `true` | Обновлять Oxide при ежедневном рестарте |
-| `FULLWIPE_ENABLED` | `true` | Включить Full Wipe |
-| `FULLWIPE_COUNTDOWN` | `600` | Отсчёт перед остановкой при Full Wipe / вайпе карты (секунд) |
-| `FULLWIPE_LONDON_HOUR` | `19` | Час по Лондону, когда Facepunch выпускает апдейты |
-| `FULLWIPE_PRE_WAIT_MINUTES` | `30` | За сколько минут до апдейта начать подготовку |
-| `FULLWIPE_UPDATE_WAIT_MAX` | `7200` | Макс. время, которое плановый Full Wipe ждёт апдейт Steam (секунд); `fullwipe-now` и вайпы карты не ждут |
-| `FULLWIPE_UPDATE_CHECK_INTERVAL` | `120` | Проверять Steam каждые N секунд |
-| `MAPWIPE_ENABLED` | `false` | Включить плановые вайпы карты (только карта, чертежи остаются) |
-| `MAPWIPE_DAY` | `5` | День недели: 1=пн … 7=вс |
-| `MAPWIPE_TIME` | `19:00` | Время старта (по времени ВМ); в этот момент начинается отсчёт |
-| `MAPWIPE_INTERVAL_WEEKS` | `1` | 1 = каждую неделю, 2 = раз в две недели и т. д.; считается от последнего вайпа любого вида |
-| `MAPWIPE_MONTH_DAYS` | `""` | Дни месяца, `С-ПО` (например `16-22`); пусто = любой день |
-| `MAPWIPE_OPEN_TIME` | `""` | После вайпа карты держать игроков в очереди подключения (maxplayers 0) до ЧЧ:ММ; пусто = открыть сразу |
-| `FULLWIPE_OPEN_TIME` | `""` | То же для полного вайпа |
-| `WIPETIMER_ENABLED` | `false` | Показывать в браузере серверов следующий вайп по этому расписанию (`wipetimer.wipeunixtimestampoverride`) |
-| `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | `true` | Пропускать ежедневный рестарт в день Full Wipe |
-| `OXIDE_BACKUP_BEFORE_UPDATE` | `true` | Бэкапить `Managed/` перед обновлением Oxide |
-| `OXIDE_CHECK_ENABLED` | `true` | После запуска проверить `oxide.version`, при поломке Oxide откатить `Managed/` |
-| `OXIDE_LOAD_TIMEOUT` | `900` | Макс. ожидание RCON после запуска (секунд); должно покрывать генерацию карты после вайпа |
-| `SYSTEM_UPDATE_ENABLED` | `true` | Выполнять `apt-get update` + `unattended-upgrade` в окне ежедневного рестарта (сервер остановлен) |
-| `REBOOT_IF_REQUIRED` | `true` | Если ОС требует перезагрузку — перезагрузить ВМ вместо запуска сервера |
-| `SERVER_START_TIMEOUT` | `600` | Макс. время ожидания процесса RustDedicated (используется и в `post-boot`) |
-| `WATCHDOG_ENABLED` | `true` | Перезапускать упавший или зависший сервер (штатная остановка уважается) |
-| `WATCHDOG_GRACE` | `1800` | Не считать сервер зависшим, пока его процесс младше этого возраста (секунд) |
-| `WATCHDOG_HANG_CHECKS` | `5` | RCON молчит столько минут подряд = завис |
-| `WATCHDOG_MAX_RESTARTS` | `3` | В час; сверх этого сторож сдаётся и шлёт алерт |
-| `ENABLE_TELEGRAM` | `true` | Включить Telegram-уведомления |
-| `TELEGRAM_LOG_LEVEL` | `full` | `full` / `success_error` / `error_only` |
-| `MESSAGES_LANG` | `en` | Язык сообщений в Telegram: `en` / `ru` |
-| `LOG_KEEP_DAYS` | `30` | Удалять `manager-*.log` старше этого срока (дней) |
+| `LGSM_SCRIPT` | † `/home/YOUR_USERNAME/rustserver` | Скрипт LinuxGSM этого сервера. |
+| `LGSM_SELFNAME` | имя файла `LGSM_SCRIPT` | Имя экземпляра LGSM (`rustserver`): по нему названы конфиг, файл сида, консольный лог, lock-файлы и папка identity сервера. Задавайте только при нестандартной раскладке. |
+| `LGSM_LOCK_DIR` | `lgsm/lock` рядом с `LGSM_SCRIPT` | Где LGSM хранит `<имя>-started.lock` и `<имя>-starting.lock`. Их читает сторож. |
+| `SERVERFILES_DIR` | † `/home/YOUR_USERNAME/serverfiles` | `serverfiles` LGSM (внутри `RustDedicated_Data/`). |
+| `RCON_CLI` | † `/home/YOUR_USERNAME/rcon-0.10.3-amd64_linux/rcon` | Путь к бинарнику rcon-cli. |
+| `RCON_HOST` | † `127.0.0.1` | Где слушает RCON; скрипт работает на той же машине. |
+| `RCON_PORT` | † `28016` | `rconport` из `rustserver.cfg` (по умолчанию порт игры + 1). |
 
-### 🗺️ Расписание вайпа карты
+### Секреты (`.secrets.env`, `chmod 600`)
 
-Вайпы карты по умолчанию выключены. Примеры:
+| Переменная | Значение |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather. |
+| `TELEGRAM_CHAT_ID` | Чат или группа, куда идут сообщения. |
+| `RCON_PASS` | Пароль RCON (`secrets-rustserver.cfg` в LGSM). |
+
+### Telegram и названия
+
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `ENABLE_TELEGRAM` | † `true` | `false` = только лог-файл. |
+| `TELEGRAM_LOG_LEVEL` | † `full` | `full` все шаги; `success_error` итоги и ошибки; `error_only` только ошибки. Неизвестное значение работает как `full`. |
+| `MESSAGES_LANG` | `en` | Язык сообщений в Telegram: `en` или `ru`. Лог-файл всегда на английском. |
+| `SERVER_NAME` | † `My Rust Server` | Полное имя, используется в крупных сообщениях (рестарт начат, новый вайп). |
+| `SERVER_TAG` | † `MYSERVER` | Короткая метка в начале остальных сообщений. |
+
+### Ежедневный рестарт
+
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `DAILY_RESTART_ENABLED` | † `true` | Выполнять ежедневный рестарт (от него зависит и ручная команда `restart`). |
+| `DAILY_RESTART_TIME` | `04:30` | Когда начинается отсчёт; сервер останавливается через `DAILY_RESTART_COUNTDOWN`. |
+| `DAILY_RESTART_COUNTDOWN` | † `1800` | Отсчёт для игроков. |
+| `DAILY_RESTART_UPDATE_RUST` | † `true` | Обновлять Rust (`lgsm update`) на остановленном сервере. |
+| `DAILY_RESTART_UPDATE_OXIDE` | † `true` | Обновлять Oxide (`lgsm mods-update`) на остановленном сервере. Вайп всегда обновляет оба. |
+| `SKIP_DAILY_RESTART_ON_FULLWIPE_DAY` | † `true` | Пропускать рестарт в первый четверг месяца (вечерний вайп и так перезапускает и обновляет сервер). Действует, только пока `FULLWIPE_ENABLED` равен `true`. |
+
+### Full Wipe
+
+Первый четверг месяца. День не настраивается: в этот день выходит принудительное обновление Facepunch.
+
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `FULLWIPE_ENABLED` | † `true` | Выполнять запланированный Full Wipe (и устаревшую запись `fullwipe`). При `false` ручной `fullwipe-now` не блокируется. |
+| `FULLWIPE_LONDON_HOUR` | † `19` | Час (по Лондону), когда выходит обновление Facepunch; в местное время скрипт переводит сам. |
+| `FULLWIPE_PRE_WAIT_MINUTES` | † `30` | Отсчёт начинается за столько минут до этого часа, чтобы к выходу обновления сервер уже был остановлен. С этого момента открывается трёхчасовое окно. |
+| `FULLWIPE_COUNTDOWN` | † `600` | Отсчёт перед остановкой сервера для **любого** вайпа (и Full Wipe, и вайпа карты). |
+| `FULLWIPE_UPDATE_WAIT_MAX` | † `7200` | Сколько запланированный Full Wipe ждёт обновление. По истечении вайп отменяется, приходит алерт, а сервер запускается снова без вайпа. |
+| `FULLWIPE_UPDATE_CHECK_INTERVAL` | † `120` | Как часто спрашивать Steam. |
+| `FULLWIPE_OPEN_TIME` | `""` | Время открытия после вайпа, см. [Шлюз открытия](#шлюз-открытия). |
+
+### Вайп карты
+
+Только карта, чертежи остаются. По умолчанию выключен.
+
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `MAPWIPE_ENABLED` | `false` | Выполнять вайпы карты. |
+| `MAPWIPE_DAY` | `5` | День недели, 1=пн … 7=вс. Не выполняется в день Full Wipe (пока `FULLWIPE_ENABLED` равен `true`). |
+| `MAPWIPE_TIME` | `19:00` | Когда начинается отсчёт; сам вайп наступает через `FULLWIPE_COUNTDOWN`. Окно: 1 час. |
+| `MAPWIPE_INTERVAL_WEEKS` | `1` | Раз в N недель, считая от **последнего вайпа любого вида** (по возрасту самого свежего файла `*.map`), поэтому принудительный четверговый вайп обнуляет отсчёт. |
+| `MAPWIPE_MONTH_DAYS` | `""` | Только в эти числа месяца: `ОТ-ДО` (`16-22`) или одно число; пусто = любые. |
+| `MAPWIPE_OPEN_TIME` | `""` | Время открытия после вайпа, см. [Шлюз открытия](#шлюз-открытия). |
 
 ```env
-# Каждую пятницу в 19:00
-MAPWIPE_ENABLED="true"
-MAPWIPE_DAY=5
-MAPWIPE_TIME="19:00"
-MAPWIPE_INTERVAL_WEEKS=1
+# каждую пятницу в 19:00
+MAPWIPE_ENABLED="true"  MAPWIPE_DAY=5  MAPWIPE_TIME="19:00"  MAPWIPE_INTERVAL_WEEKS=1
+
+# раз в две недели по понедельникам в 18:00
+MAPWIPE_ENABLED="true"  MAPWIPE_DAY=1  MAPWIPE_TIME="18:00"  MAPWIPE_INTERVAL_WEEKS=2
+
+# ровно два вайпа в месяц: принудительный в первый четверг и пятница двумя неделями позже (16-22 числа)
+MAPWIPE_ENABLED="true"  MAPWIPE_DAY=5  MAPWIPE_TIME="19:50"  MAPWIPE_MONTH_DAYS="16-22"
+
+# каждый четверг, игроков пускают в 20:00 (первый четверг вместо этого идёт Full Wipe)
+MAPWIPE_ENABLED="true"  MAPWIPE_DAY=4  MAPWIPE_TIME="18:45"  MAPWIPE_OPEN_TIME="20:00"
 ```
 
-```env
-# Раз в две недели по понедельникам в 18:00
-MAPWIPE_ENABLED="true"
-MAPWIPE_DAY=1
-MAPWIPE_TIME="18:00"
-MAPWIPE_INTERVAL_WEEKS=2
-```
+Простой двухнедельный интервал в месяцах с пятью неделями добавил бы третий вайп за неделю до принудительного; `MAPWIPE_MONTH_DAYS` этого избегает.
 
-```env
-# Два раза в месяц: глобальный вайп в первый четверг плюс вайп карты в пятницу
-# через две недели (всегда 16–22 число)
-MAPWIPE_ENABLED="true"
-MAPWIPE_DAY=5
-MAPWIPE_TIME="19:50"
-MAPWIPE_INTERVAL_WEEKS=1
-MAPWIPE_MONTH_DAYS="16-22"
-```
+### Витрина сервера
 
-### Открытие в точное время
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `WIPETIMER_ENABLED` | `false` | Показывать в браузере серверов настоящее время следующего вайпа через `wipetimer.wipeunixtimestampoverride`. Выставляется из `tick`, когда сервер проработал 15 минут, и повторно после каждого запуска. Для Full Wipe показывается время обновления Facepunch; для вайпа карты `MAPWIPE_OPEN_TIME`, а если он пуст или имеет вид `+N`, момент остановки сервера (`MAPWIPE_TIME` + `FULLWIPE_COUNTDOWN`, для `+N` ещё плюс N минут). |
+| `SERVERNAME_BASE` | `""` | Базовое имя; вместе со следующей настройкой `servername` в LGSM при каждом вайпе становится `БАЗА \| WIPE дд.мм`. В `rustserver.cfg` должна быть строка `servername="..."`. Символы `"`, `$` и обратная кавычка не допускаются (LGSM исполняет этот файл). |
+| `SERVERNAME_WIPE_DATE` | `false` | Включить имя с датой. |
 
-С `MAPWIPE_OPEN_TIME="20:00"` вайп запускает новую карту с `maxplayers="0"` в конфиге LGSM, и все, кто подключается, попадают во встроенную очередь Rust. В 20:00 прежнее значение возвращается (конфиг LGSM + `server.maxplayers` по RCON), и очередь заходит в порядке подключения. Состояние хранится в `.state/gate`; если запуск упадёт, следующий `tick` откроет сервер в назначенное время. Запускайте вайп с запасом на генерацию карты (около 12 минут для карты 3500).
+### Oxide и запуск сервера
 
-Вместо `ЧЧ:ММ` можно указать `+N`: открыть на ближайшей отметке, кратной N минутам, после готовности сервера (`+5`: готов в 22:13 → открытие в 22:15), чтобы никто не стоял в очереди дольше N минут. Удобно для полного вайпа, чьё начало зависит от обновления Facepunch.
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `OXIDE_BACKUP_BEFORE_UPDATE` | † `true` | Копировать `RustDedicated_Data/Managed` в `Managed.backup-<дата>` перед обновлением Oxide (копии старше 30 дней удаляются). Нужно для отката. |
+| `OXIDE_CHECK_ENABLED` | `true` | После запуска проверять `oxide.version`; если Oxide нет, откатывать `Managed/`. Ожидание загрузки сервера выполняется и при `false`. |
+| `OXIDE_LOAD_TIMEOUT` | `900` | Сколько ждать полной загрузки сервера после запуска. Должно покрывать генерацию карты после вайпа (на слабом железе больше 10 минут). |
+| `SERVER_START_TIMEOUT` | † `600` | Сколько ждать появления процесса `RustDedicated` (используется и в `post-boot`). |
 
-Интервал считается от последнего вайпа любого вида (самый свежий файл `*.map`), поэтому принудительный месячный Full Wipe сбрасывает счётчик. Full Wipe остаётся на первом четверге, потому что этот день задаёт принудительный апдейт Facepunch. В день Full Wipe вайп карты пропускается.
+### Обслуживание ОС
 
-### 🌱 Сид карты
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `SYSTEM_UPDATE_ENABLED` | `false` (`true` в примере) | Выполнять `apt-get update` и `unattended-upgrade`, пока сервер остановлен. *Что* именно ставится, определяет Ubuntu (`Unattended-Upgrade::Allowed-Origins`). |
+| `REBOOT_IF_REQUIRED` | `false` (`true` в примере) | Если есть `/var/run/reboot-required`, перезагрузить ВМ вместо запуска сервера; Rust поднимет systemd. |
 
-Сид менеджер не трогает — этим занимается LinuxGSM. Если в `lgsm/config-lgsm/rustserver/rustserver.cfg` указано `seed=""`, то `full-wipe` (и `map-wipe`) в LGSM записывает новый случайный сид в `lgsm/data/rustserver-seed.txt`, и следующий запуск использует его.
+Для одноразового выключения настройки нет, нужен флаг: `touch ~/rust_server/.poweroff-once`.
 
-- LGSM вайпает (и меняет сид) только если существует файл `.map`/`.sav`; иначе он пишет «Wipe not required», и сид остаётся прежним.
-- Один только принудительный апдейт Facepunch стирает карту (повышается версия сохранений), но сид остаётся тем же, поэтому рельеф повторяется. Сид меняют только `full-wipe` и `map-wipe` в LGSM. Сообщение «новый вайп запущен» в Telegram показывает новый сид.
+### Сторож
 
-## 🎮 Команды
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `WATCHDOG_ENABLED` | `true` | Перезапускать упавший или зависший сервер. |
+| `WATCHDOG_GRACE` | `1800` | Процесс моложе этого возраста никогда не считается зависшим (генерация карты занимает время). |
+| `WATCHDOG_HANG_CHECKS` | `5` | RCON молчит столько проверок подряд (по одной в минуту) = сервер завис. |
+| `WATCHDOG_MAX_RESTARTS` | `3` | В час. Сверх этого сторож останавливается и один раз шлёт алерт. |
+
+### Логи
+
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `LOG_DIR` | † `/home/YOUR_USERNAME/rust_server/logs` | Куда пишутся `manager-ГГГГММДД.log` и `cron.log`. |
+| `LOG_KEEP_DAYS` | `30` | Удалять `manager-*.log` старше этого срока. `cron.log` при 10 МБ переименовывается в `cron.log.1`. |
+
+## Команды
 
 ```bash
-# Cron каждую минуту: запускает то, что config.env назначает на сейчас, иначе сторожа
-./manager.sh tick
-
-# Ежедневный рестарт прямо сейчас (с авто-пропуском в день Full Wipe), плюс обновления ОС / перезагрузка
-./manager.sh restart
-
-# Устаревшая запись для cron: Full Wipe, запустится только если сегодня первый четверг
-# (ждёт апдейт Facepunch)
-./manager.sh fullwipe
-
-# Ручной Full Wipe — пропускает проверку даты и не ждёт апдейт Facepunch
-# (обновляется, если апдейт есть, и вайпает в любом случае) (ОСТОРОЖНО)
-./manager.sh fullwipe-now
-
-# Ручной вайп карты — только карта, чертежи остаются, без проверки даты и без ожидания апдейта
-./manager.sh mapwipe-now
-
-# Перезапустить упавший или зависший сервер (tick и так делает это каждую минуту)
-./manager.sh watchdog
-
-# Отчёт о состоянии сервера после загрузки ВМ (для записи @reboot в cron)
-./manager.sh post-boot
-
-# Тест Telegram-уведомлений
-./manager.sh test-telegram
-
-# Проверить наличие апдейта Rust в Steam
-./manager.sh check-update
+./manager.sh <команда>
 ```
 
-Одноразовое выключение при ближайшем ежедневном рестарте (обслуживание на стороне хоста):
-```bash
-touch ~/rust_server/.poweroff-once
-```
-ВМ выключится вместо запуска сервера, флаг удаляется при использовании, а запустить ВМ снова должен хост.
+| Команда | Что делает |
+|---|---|
+| `tick` | Запись для cron (раз в минуту). Открывает шлюз, если его время пришло, затем запускает то, что `config.env` назначает на сейчас (Full Wipe, вайп карты, ежедневный рестарт), а если ничего нет, выставляет таймер вайпа и запускает сторожа. |
+| `post-boot` | Запись для `@reboot`. После загрузки ждёт процесс сервера и сообщает результат (с версией ядра). |
+| `restart` | Ежедневный рестарт прямо сейчас. Учитывает `DAILY_RESTART_ENABLED` и пропуск в день Full Wipe. |
+| `fullwipe-now` | Full Wipe прямо сейчас: без проверки даты и без ожидания обновления Facepunch (обновляется, если сборка вышла, и вайпает в любом случае). Работает даже при `FULLWIPE_ENABLED="false"`. Осторожно. |
+| `mapwipe-now` | Вайп карты прямо сейчас: только карта, чертежи остаются, без проверки даты и без ожидания обновления. |
+| `watchdog` | Одна проверка сторожа (`tick` и так делает её каждую минуту). |
+| `check-update` | Сравнивает локальную и удалённую сборки Rust. Код 0 и `UPDATE AVAILABLE`; 1 и `No update`; 2 и `Cannot read the build numbers (see the log)` (сборки прочитать не удалось). |
+| `test-telegram` | Отправляет тестовое сообщение. |
+| `fullwipe` | Устаревшая запись для cron, оставшаяся с времён до `tick`: Full Wipe только в первый четверг. |
 
-## 📁 Структура проекта
+Одновременно работает только один запуск. Второй ручной запуск отменяется с алертом в Telegram; `tick` и `watchdog` в этом случае молча завершаются.
+
+**Одноразовое выключение** для работ на стороне хоста: `touch ~/rust_server/.poweroff-once`. При ближайшем ежедневном рестарте ВМ выключится вместо запуска сервера. Флаг удаляется при использовании, а включать ВМ обратно должен хост.
+
+Файлы рядом со скриптом:
 
 ```
 rust_server/
-├── manager.sh           # Главный скрипт
-├── config.env           # Конфигурация (пути, тайминги, флаги)
-├── .secrets.env         # Telegram токен, RCON пароль (chmod 600)
-├── .manager.lock        # flock: один запуск за раз
-├── .poweroff-once       # Необязательный одноразовый флаг выключения (удаляется при использовании)
-├── .state/              # отметки done-* (событие уже выполнено сегодня), hang, restarts, gave_up
-└── logs/
-    ├── manager-YYYYMMDD.log   # удаляются через LOG_KEEP_DAYS дней
-    ├── cron.log
-    └── cron.log.1             # cron.log, ротация при 10 МБ
+├── manager.sh          скрипт
+├── config.env          ваши настройки
+├── .secrets.env        токен, chat id, пароль RCON (chmod 600)
+├── .manager.lock       flock: один запуск за раз
+├── .poweroff-once      необязательный флаг одноразового выключения
+├── .state/             метки done-*, gate, hang, restarts, gave_up, wipetimer
+└── logs/               manager-ГГГГММДД.log, cron.log (+ cron.log.1)
 ```
 
-## 🔧 Решение проблем
+## Как это работает
 
-### Сервер не поднимается автоматически после ребута
-Проверь systemd-юнит:
+### Планировщик
+
+`tick` при каждом запуске заново читает `config.env` и выбирает первое, что подошло по времени.
+
+```mermaid
+flowchart TD
+    T["cron: tick, раз в минуту"] --> L{"уже идёт другой запуск?"}
+    L -->|"да"| Q["молча выйти"]
+    L -->|"нет"| G["открыть шлюз, если пришло его время"]
+    G --> F{"первый четверг, окно Full Wipe открыто?"}
+    F -->|"да"| FW["Full Wipe"]
+    F -->|"нет"| M{"день, время и интервал вайпа карты подошли?"}
+    M -->|"да"| MW["Вайп карты"]
+    M -->|"нет"| D{"время ежедневного рестарта наступило?"}
+    D -->|"да"| DR["Ежедневный рестарт"]
+    D -->|"нет"| W["таймер вайпа, затем сторож"]
+```
+
+- **Full Wipe**: первый четверг, от `FULLWIPE_LONDON_HOUR` (по Лондону) минус `FULLWIPE_PRE_WAIT_MINUTES`, окно 3 часа. Время переводится в местное с учётом летнего.
+- **Вайп карты**: `MAPWIPE_DAY` в `MAPWIPE_TIME`, окно 1 час, если число месяца разрешено `MAPWIPE_MONTH_DAYS`, а последний вайп любого вида достаточно старый. Не в день Full Wipe.
+- **Ежедневный рестарт**: `DAILY_RESTART_TIME`, окно 1 час.
+- **Раз в сутки**: когда событие стартует, создаётся метка `.state/done-<событие>-<дата>`, поэтому в тот же день оно не повторится. Окна нужны, чтобы выключенная ВМ не запускала событие на несколько часов позже.
+- Пока идёт вайп или рестарт, они держат блокировку: `tick` молчит, а сторож не вмешивается.
+
+### Вайп
+
+Одна и та же последовательность обслуживает запланированный Full Wipe, вайпы карты и команды `*-now`.
+
+```mermaid
+flowchart TD
+    S["пора вайпить"] --> C["отсчёт по RCON, остановка сервера"]
+    C --> K{"запланированный Full Wipe?"}
+    K -->|"да"| P["ждать обновление Facepunch, опрашивая Steam"]
+    K -->|"нет"| U
+    P -->|"таймаут"| X["отмена, алерт, сервер запускается снова без вайпа"]
+    P -->|"обновление вышло"| U["обновить Rust"]
+    U --> O["копия Managed/, обновить Oxide"]
+    O --> LW["LGSM full-wipe или map-wipe: новый сид"]
+    LW --> N["дата вайпа в имени сервера, закрыть шлюз"]
+    N --> ST["запустить сервер, дождаться загрузки, проверка Oxide"]
+    ST --> A["объявление: новый вайп"]
+    A --> OP["дождаться времени открытия, открыть шлюз"]
+```
+
+Обновление Facepunch ждёт только запланированный Full Wipe. Вайпы карты и команды `*-now` выполняют `update` (он ничего не делает, если новой сборки нет) и вайпают в любом случае. Если ожидание закончилось таймаутом или обновление Rust не удалось, вайп отменяется до того, как что-либо стёрто: приходит алерт, а сервер запускается снова как был и проходит проверку Oxide, чтобы игроки не оставались за дверью, пока кто-то отреагирует (второй алерт, «отменён, сервер снова запущен без вайпа», подтверждает это). Вайп выполните вручную, когда получится.
+
+Сид меняет LinuxGSM, а не менеджер. При `seed=""` его `full-wipe` и `map-wipe` записывают новый случайный сид, который показывает сообщение «новый вайп». Одно принудительное обновление Facepunch стирает карту, но сид оставляет прежним, и рельеф повторяется; сид меняет только вайп LGSM. LGSM вайпает, лишь если есть файл `.map`/`.sav`, иначе пишет «Wipe not required».
+
+### Шлюз открытия
+
+Игроки, зашедшие в первую секунду вайпа, перегружают не до конца загруженный сервер. Если задан `MAPWIPE_OPEN_TIME` / `FULLWIPE_OPEN_TIME`, менеджер запускает новую карту с `maxplayers 0` в конфиге LGSM, и все ожидают во встроенной очереди Rust («position N»). В момент открытия прежнее значение возвращается в конфиг и по RCON (`server.maxplayers`, результат перечитывается для проверки), и очередь заходит в порядке прихода.
+
+- `"ЧЧ:ММ"` открывает в точное время сегодня. Запускайте вайп с запасом на генерацию карты (около 12 минут для размера 3500). Если к концу вайпа это время уже прошло, сервер просто открывается, как только поднимется.
+- `"+N"` открывает на ближайшей отметке в N минут после того, как сервер *загрузился* (`+5`: поднялся в 22:13, открылся в 22:15), чтобы никто не стоял в очереди дольше N минут. Придумано для Full Wipe, чей старт зависит от Facepunch.
+- Состояние хранится в `.state/gate` (`<время открытия> <maxplayers>`). Если запуск оборвался, следующий `tick` откроет сервер, когда время придёт, процесс работает и замечено `Server startup complete`. Остановленный или не до конца загруженный сервер никогда не «открывается»: шлюз остаётся закрытым, следующий тик повторит попытку.
+- Если в конфиге LGSM нет строки `maxplayers="N"`, шлюз не закрывается (об этом пишет лог).
+
+### Готовность и проверка Oxide
+
+После каждого запуска менеджер ждёт **готовности**: RCON отвечает на `serverinfo` *и* в консольном логе текущего запуска (`log/console/<имя>-console.log`) есть `Server startup complete`. Одного RCON недостаточно: он отвечает, пока мир ещё загружается. Ожидание считается по настенным часам и заканчивается через `OXIDE_LOAD_TIMEOUT`. Запасные варианты, чтобы пропавшая или переформулированная строка не заблокировала работу навсегда: если консольного лога нет или он старше работающего процесса (логирование консоли выключено), решает один RCON; процесс старше `OXIDE_LOAD_TIMEOUT` проходит и без строки (с записью в лог).
+
+```mermaid
+flowchart TD
+    S["сервер запущен"] --> R{"RCON отвечает и загрузка завершена?"}
+    R -->|"процесс умер"| CR["вылет при загрузке: перезапуск до 2 раз, Managed/ не трогаем"]
+    CR -->|"продолжает падать"| GU["алерт: падает при загрузке, нужен человек"]
+    R -->|"таймаут"| NR["алерт: RCON молчит, Oxide не проверен"]
+    R -->|"готов"| OX{"oxide.version отвечает?"}
+    OX -->|"да"| OK["готово"]
+    OX -->|"нет, копия есть"| RB["остановка, восстановление Managed/, запуск, повторное ожидание"]
+    OX -->|"нет, копии нет"| NB["алерт, нужен человек"]
+    RB --> OK2["алерт: откат сделан, сервер работает"]
+```
+
+- Откат использует копию `Managed.backup-<дата>`, сделанную прямо перед обновлением Oxide **в этом запуске**. Если запуск Oxide не обновлял, откатывать не к чему, и вы получите алерт.
+- Если в том же запуске обновлялся и сам Rust, в копии Oxide нет: сервер работает без плагинов, пока uMod не выпустит исправление. Oxide нередко отстаёт от новой сборки Rust на 30-90 минут.
+- Вылет игры при загрузке не считается поломкой Oxide (типичная причина: depot застали посреди публикации). Менеджер перезапускает сервер до двух раз и не трогает `Managed/`; откат делается, только когда сервер отвечает по RCON, но Oxide не загружен.
+- «Новый вайп» объявляется и шлюз открывается только для сервера, который работает и загрузился. Иначе шлюз остаётся закрытым, его позже откроет `tick`, а сообщения «вайп начался» не будет.
+
+### Ежедневный рестарт и обслуживание ОС
+
+```mermaid
+flowchart TD
+    A["время рестарта"] --> B{"первый четверг и пропуск включён?"}
+    B -->|"да"| SK["пропуск, вайп всё покроет"]
+    B -->|"нет"| C["отсчёт по RCON, остановка"]
+    C --> U["обновить Rust, Oxide"]
+    U --> OS["apt-get update + unattended-upgrade"]
+    OS --> PF{"есть .poweroff-once?"}
+    PF -->|"да"| PO["выключить ВМ"]
+    PF -->|"нет"| RR{"нужна перезагрузка и REBOOT_IF_REQUIRED?"}
+    RR -->|"да"| RB["перезагрузка, Rust поднимет systemd, отчитается post-boot"]
+    RR -->|"нет"| S["запуск, готовность и проверка Oxide, отчёт"]
+```
+
+Штатная остановка отправляет по RCON `restart <отсчёт>`, ждёт окончания отсчёта, затем даёт серверу 3 минуты на выход и только после этого выполняет принудительный `systemctl stop`.
+
+### Сторож
+
+Работает из `tick` каждую минуту (либо из собственной записи cron; тогда «проверка» это один запуск cron).
+
+```mermaid
+flowchart TD
+    W["сторож"] --> B{"загрузка была меньше 10 минут назад или есть starting.lock?"}
+    B -->|"да"| SK["пропуск"]
+    B -->|"нет"| L{"есть started.lock?"}
+    L -->|"нет: остановлен намеренно"| NV["не перезапускать никогда"]
+    L -->|"да"| P{"RustDedicated работает?"}
+    P -->|"нет"| CR["упал"]
+    P -->|"да"| H{"старше WATCHDOG_GRACE и RCON молчит WATCHDOG_HANG_CHECKS проверок подряд?"}
+    H -->|"да"| HU["завис"]
+    H -->|"нет"| OK["здоров"]
+    CR --> LIM{"меньше WATCHDOG_MAX_RESTARTS за час?"}
+    HU --> LIM
+    LIM -->|"да"| RS["перезапуск, алерт"]
+    LIM -->|"нет"| GU["сдаться, один алерт"]
+```
+
+LinuxGSM удаляет `lgsm/lock/<имя>-started.lock` при штатной остановке (`./rustserver stop`, `systemctl stop rustserver`), поэтому сервер, который вы остановили сами, остаётся остановленным. Команда `quit` из консоли или по RCON оставляет lock-файл и считается падением. Когда сервер снова здоров, `.state/gave_up` очищается. Сторож только перезапускает сервер, проверку Oxide он не выполняет.
+
+### Логи и уборка
+
+В `logs/manager-ГГГГММДД.log` пишется каждый шаг на английском; старые файлы удаляются через `LOG_KEEP_DAYS`. `cron.log` ротируется при 10 МБ. LGSM и rcon-cli запускаются с закрытым файловым дескриптором 9, поэтому блокировка умирает вместе с менеджером и не утекает в tmux. Скрипт сначала переходит в собственную папку, потому что `find` внутри LGSM падает, если унаследованный рабочий каталог недоступен.
+
+## Сообщения в Telegram
+
+Сообщения идут обычным текстом, начинаются с `SERVER_TAG` (крупные содержат `SERVER_NAME`) и отправляются на языке `MESSAGES_LANG`. Уровень определяет, что отправляется: `full` шлёт все три группы, `success_error` последние две, `error_only` только последнюю.
+
+**`full`: ход работы**
+
+| Сообщение | Когда |
+|---|---|
+| Ежедневный рестарт (отсчёт N мин) | рестарт начался |
+| Сегодня полный вайп, ежедневный рестарт пропускаю | первый четверг |
+| Команда рестарта отправлена · Сервер остановлен · Принудительная остановка · Сервер уже остановлен | остановка |
+| Rust обновлён · Oxide обновлён · Обновления системы установлены | каждое обновление |
+| Системе нужна перезагрузка · ВМ выключается для обслуживания хоста | перезагрузка или `.poweroff-once` |
+| Жду обновление Rust от Facepunch · Обновление Rust вышло (ждал N мин) | Full Wipe |
+| Сегодня полный вайп / вайп карты, подготовка через N мин | только устаревшая запись `fullwipe`, запущенная заранее |
+| Начинаю вайп · Выполняю вайп · Вайп выполнен | шаги вайпа |
+| Сервер готов, игроки ждут в очереди до ЧЧ:ММ | шлюз закрыт |
+| Проверка уведомлений Telegram | `test-telegram` |
+
+**`success`: итоги**
+
+| Сообщение | Когда |
+|---|---|
+| Ежедневный рестарт завершён | сервер загрузился и проверка Oxide пройдена |
+| НОВЫЙ ВАЙП! (с сидом) | сервер загрузился после вайпа |
+| Сервер открыт, очередь заходит (слотов: N) | шлюз открыт |
+| ВМ загрузилась, сервер запущен (ядро) | `post-boot` |
+| Сервер перезапущен сторожем | сторож |
+
+**`error`: ошибки, приходят всегда (кроме отключённого Telegram)**
+
+| Сообщение | Смысл |
+|---|---|
+| Не удалось отправить RCON-команду · Сервер не запустился за N мин | сбой остановки или запуска |
+| Ошибка обновления Rust / Oxide / системы | не удался шаг обновления |
+| Обновление Rust не вышло за N мин. Вайп отменён | Full Wipe отменён до вайпа |
+| Rust не обновился, вайп отменён · Ошибка: вайп не выполнен | вайп прерван |
+| Вайп отменён, сервер снова запущен без вайпа | после любой из двух отмен выше: сервер вернулся, карта прежняя |
+| Сервер запущен, но RCON не отвечает уже N мин | таймаут готовности, Oxide не проверен |
+| Oxide не загрузился, откатываю · Откат сделан, сервер запущен · Откат не помог · копии Managed/ нет | проверка Oxide |
+| Сервер упал, перезапускаю · Сервер завис · Сторож не смог запустить сервер | сторож и вылет при загрузке |
+| Сервер падает слишком часто, сторож остановился | слишком много перезапусков сторожа за час |
+| Сервер падает при загрузке (3 запуска подряд) | попытки перезапуска при загрузке исчерпаны; `Managed/` не тронут |
+| ВМ загрузилась, но сервер не запустился | `post-boot` |
+| manager.sh уже работает, второй запуск отменён | занята блокировка |
+
+## Решение проблем
+
+Все времена в логах местные по ВМ. Начинайте с `logs/manager-ГГГГММДД.log` и `logs/cron.log`.
+
+### SteamCMD скачивается заново или update падает только из cron
+
+**Симптом:** `./rustserver update` в вашей оболочке работает, а при запуске из cron LinuxGSM скачивает SteamCMD или обновление падает; `check-update` завершается с кодом 2, а в логе `Cannot get versions (Local= Remote=)`.
+
+**Причина:** пакет `steamcmd` в Ubuntu ставится в `/usr/games`. Этот каталог есть в `PATH` вашей рабочей оболочки, но нет в `PATH` у cron (`/usr/bin:/bin`) и у systemd, поэтому LinuxGSM его не находит и во время `update` и `start` пытается скачать SteamCMD сам.
+
+**Решение:** укажите LinuxGSM установленную копию:
+
+```bash
+mkdir -p ~/.steam
+ln -s ~/.local/share/Steam/steamcmd ~/.steam/steamcmd
+```
+
+Другой вариант: первой строкой crontab добавить `PATH=/usr/games:/usr/bin:/bin`.
+
+**Проверка в точно таком окружении, как у cron:**
+
+```bash
+env -i HOME=$HOME PATH=/usr/bin:/bin ~/rust_server/manager.sh check-update
+```
+
+Должно вывести `UPDATE AVAILABLE` или `No update`, а в логе должны быть настоящие номера сборок, не `Cannot read the build numbers` (код 2). Тот же приём годится для всего, что под cron ведёт себя иначе, чем в терминале.
+
+### Сервер не поднимается после перезагрузки
+
 ```bash
 sudo systemctl status rustserver
 sudo systemctl is-enabled rustserver
 journalctl -u rustserver -n 50
 ```
-Убедись, что он `enabled` и используется `Type=oneshot` (а не `forking`).
 
-### `sudo: a password is required` из cron
-Правило `sudoers.d/` не применилось корректно. Проверь:
-```bash
-sudo -n systemctl status rustserver
-```
-Должно показать статус без запроса пароля. `sudo -n -l` покажет разрешённые команды — в списке должны быть и `apt-get update -qq`, `unattended-upgrade`, `reboot`, `poweroff`, иначе шаг обслуживания ОС завершится алертом «OS update error».
+Юнит должен быть `enabled` и иметь `Type=oneshot`. Сообщение `post-boot` в Telegram скажет, появился ли процесс за `SERVER_START_TIMEOUT`.
+
+### В логе `sudo: a password is required`
+
+Правило sudoers отсутствует или не совпадает. `sudo -n -l` должен показывать `systemctl start/stop rustserver`, `apt-get update -qq`, `unattended-upgrade`, `reboot` и `poweroff`; если не хватает команды для обслуживания ОС, придёт алерт «ошибка обновления системы».
 
 ### `find: Failed to restore initial working directory`
-`find` в LinuxGSM падает, если унаследованный рабочий каталог нечитаем — обычно при запуске через `sudo -u YOUR_USERNAME` из домашней папки другого пользователя. Теперь `manager.sh` при старте сам переходит в свой каталог, так что для скрипта это исправлено. Ручные команды LGSM запускай от пользователя сервера из его домашней папки:
-```bash
-sudo -iu YOUR_USERNAME
-./rustserver details
-```
 
-### ВМ выключилась после ежедневного рестарта и не включилась
-Это сработал флаг `.poweroff-once`: ВМ выключается намеренно, чтобы хост мог провести обслуживание, и запустить её снова должен хост. Флаг удаляется при использовании, так что следующий ежедневный рестарт пройдёт как обычно.
-
-### Full Wipe запустился, но сервер на старой версии
-Цикл `wait_for_rust_update` должен это предотвратить для планового `fullwipe`. Ручной `fullwipe-now` не ждёт, поэтому вайпнет на старой версии, если Facepunch ещё не выпустил апдейт. Если это всё-таки случилось при плановом запуске:
-1. Посмотри `~/rust_server/logs/manager-*.log` на этапе ожидания
-2. Проверь вручную, что `check-update` корректно возвращает номера build
-3. Увеличь `FULLWIPE_UPDATE_WAIT_MAX`, если Facepunch особо опаздывает
-
-### Oxide не загружается после Full Wipe
-Проверка Oxide после запуска обычно ловит это сама: откатывает `Managed/` на копию до обновления и присылает алерт. Помни, что если в том же запуске обновился сам Rust, эта копия без Oxide, и сервер работает без плагинов, пока uMod не выпустит исправление. Релизы Oxide иногда задерживаются на 30-90 минут после релизов Rust. Если `mods-update` отработал слишком рано — может быть скачана несовместимая версия. Решения:
-- Подожди 30 минут и запусти `~/rustserver mods-update` вручную, потом перезапусти сервер
-- Восстанови из автобэкапа: `~/serverfiles/RustDedicated_Data/Managed.backup-YYYY-MM-DD/`
-
-### Сервер поднялся снова после того, как я его остановил
-Сторож перезапускает сервер, у которого нет процесса, пока у LGSM есть `lgsm/lock/rustserver-started.lock`. Штатная остановка (`./rustserver stop` или `systemctl stop rustserver`) удаляет этот файл, и сервер остаётся выключенным. Команда `quit` из консоли или RCON оставляет файл, и сторож считает это падением. Чтобы сервер оставался выключенным, останавливай его через LGSM или systemd — либо поставь `WATCHDOG_ENABLED="false"`. Если LGSM лежит в другом месте, задай в `config.env` параметры `LGSM_LOCK_DIR` / `LGSM_SELFNAME`.
-
-### Telegram: «Server keeps crashing ... Watchdog stopped» (сервер падает слишком часто)
-Сторож перезапустил сервер `WATCHDOG_MAX_RESTARTS` раз за час и сдался (алерт приходит один раз). Причину ищи в логах сервера; когда сервер снова здоров, `.state/gave_up` очищается сам.
-
-### Telegram: «manager.sh is already running, second run cancelled» (уже работает, второй запуск отменён)
-Одновременно разрешён только один запуск (`.manager.lock`). Вайп или рестарт ещё идёт, поэтому твой ручной запуск отменён. `tick` и `watchdog` в этом случае молча выходят.
-
-### Telegram: «RCON has not answered ... Oxide not checked» (RCON не отвечает, Oxide не проверен)
-После запуска RCON молчал дольше `OXIDE_LOAD_TIMEOUT`. Генерация карты после вайпа на слабом железе может занимать больше 10 минут: увеличь `OXIDE_LOAD_TIMEOUT`.
+`find` внутри LGSM падает, если унаследованный рабочий каталог недоступен; обычно так бывает после `sudo -u YOUR_USERNAME` из чужого домашнего каталога. `manager.sh` уже сам переходит в свою папку. Для ручных команд LGSM используйте `sudo -iu YOUR_USERNAME`.
 
 ### Ежедневный рестарт или вайп не сработал
-Каждое событие срабатывает раз в сутки в пределах окна (1 час для рестарта и вайпа карты, 3 часа для Full Wipe). Если ВМ была выключена в это время, событие пропускается, а не запускается с опозданием на несколько часов. Посмотри `~/rust_server/logs/manager-*.log` и `cron.log` и убедись, что строка `tick` есть в cron.
 
-### Сообщения Telegram не приходят
-```bash
-~/rust_server/manager.sh test-telegram
-```
-Если ничего не приходит, проверь:
-- Корректный токен бота в `.secrets.env`
-- Корректный chat ID (отрицательный для групп, положительный для личных чатов)
-- Бот добавлен в группу/канал
-- `curl https://api.telegram.org/botYOUR_TOKEN/getMe` возвращает `"ok":true`
+События срабатывают раз в сутки в пределах окна (1 час для рестарта и вайпа карты, 3 часа для Full Wipe); если ВМ в это время была выключена, событие пропускается. Проверьте также, что строка `tick` есть в `crontab -l`, что времена заданы в часовом поясе ВМ (`timedatectl`), а для вайпов карты что `MAPWIPE_INTERVAL_WEEKS` и `MAPWIPE_MONTH_DAYS` разрешают сегодняшний день (в логе будет `Map wipe day, but the last wipe was N days ago ... skipping`). Окно Full Wipe строится на местной дате ВМ, поэтому ВМ далеко к востоку от Лондона, где 19:00 по Лондону приходится уже после местной полуночи, не поддерживается.
 
-## 🗺️ Планы развития
+### Full Wipe прошёл на старой версии
 
-- [ ] Поддержка Discord webhook (вместе с Telegram)
-- [ ] Веб-дашборд для просмотра логов
-- [ ] Интеграция с `BattleMetrics` API для алертов по онлайну
-- [ ] Уведомления об апдейтах популярных плагинов
-- [ ] Поддержка нескольких серверов (один менеджер, много серверов)
+Запланированный запуск ждёт обновление, так что виновата, скорее всего, команда `fullwipe-now` (она не ждёт) или неверные номера сборок. Посмотрите в логе фазу ожидания, выполните `./manager.sh check-update` и увеличьте `FULLWIPE_UPDATE_WAIT_MAX`, если Facepunch сильно опоздал.
 
-## 🤝 Вклад в проект
+### Вайп отменился, а сервер работает на старой карте
 
-PR и issue приветствуются. Этот проект сделан для реальной боевой эксплуатации, поэтому, пожалуйста, тестируй изменения на реальном LGSM Rust-сервере перед PR.
+Пришло «Вайп отменён, сервер снова запущен без вайпа». Запланированный вайп не дождался обновления Facepunch за `FULLWIPE_UPDATE_WAIT_MAX` либо `lgsm update` завершился ошибкой. Ничего не стёрто; менеджер заново запустил сервер, чтобы игроки не остались без него. Когда причина устранена, выполните `./manager.sh fullwipe-now` (или `mapwipe-now`) сами.
 
-## 📜 Лицензия
+### После вайпа у игроков 0 слотов
 
-MIT — делай с этим кодом что хочешь, только не вини меня, если твой сервер взорвётся.
+Шлюз открытия ещё закрыт. `cat ~/rust_server/.state/gate` покажет `<время открытия> <maxplayers>`; `tick` откроет его, когда время придёт и сервер загрузится (ищите в логе строки `Gate:`). Чтобы открыть сразу: `echo "0 $(cut -d' ' -f2 ~/rust_server/.state/gate)" > ~/rust_server/.state/gate`, и следующий тик сделает это. Остановленный или ещё загружающийся сервер никогда не открывается.
 
-## 🙏 Благодарности
+### Сервер поднялся снова после того, как я его остановил
 
-- [LinuxGSM](https://linuxgsm.com/) — невоспетый герой хостинга игровых серверов
-- [gorcon/rcon-cli](https://github.com/gorcon/rcon-cli) — чистый RCON-клиент
-- [Facepunch Studios](https://facepunch.com/) — за создание Rust
-- [uMod / Oxide](https://umod.org/) — за экосистему плагинов
+Сторож считает падением отсутствие процесса при наличии `started.lock`. `./rustserver stop` и `systemctl stop rustserver` этот файл удаляют, а `quit` из консоли или по RCON нет. Останавливайте сервер через LGSM или systemd либо задайте `WATCHDOG_ENABLED="false"`. Если LGSM лежит в другом месте, задайте `LGSM_LOCK_DIR` / `LGSM_SELFNAME`.
 
----
+### «Сервер падает слишком часто ... сторож остановился»
 
-<div align="center">
+За час произошло `WATCHDOG_MAX_RESTARTS` перезапусков. Причину ищите в логах сервера; счётчик сбрасывается, когда сервер снова здоров.
 
-Если это сэкономило тебе время — поставь ⭐ репозиторию!
+### «Сервер падает при загрузке (3 запуска подряд)»
 
-</div>
+Сама игра падала при каждом запуске, поэтому менеджер не стал ни откатывать `Managed/`, ни бесконечно перезапускать сервер. Смотрите консольный лог сервера в `log/console/`: частая причина depot, застигнутый посреди публикации после обновления Facepunch, и обычный перезапуск через несколько минут нередко помогает.
+
+### «RCON не отвечает ... Oxide не проверен»
+
+Сервер не загрузился за `OXIDE_LOAD_TIMEOUT`. Генерация карты после вайпа на слабом железе занимает больше 10 минут; увеличьте значение.
+
+### Oxide не загружается после обновления
+
+Проверка должна откатить `Managed/` и прислать алерт. Если в том же запуске обновлялся Rust, в копии Oxide нет, и плагины не работают, пока uMod не выпустит сборку под новый Rust (часто 30-90 минут). После этого выполните `~/rustserver mods-update` и перезапустите сервер. Копии лежат в `~/serverfiles/RustDedicated_Data/Managed.backup-ГГГГ-ММ-ДД/`.
+
+### ВМ выключилась после рестарта и не включилась
+
+Так работает флаг `.poweroff-once`; включить ВМ должен хост. Флаг удаляется при использовании.
+
+### «manager.sh уже работает, второй запуск отменён»
+
+Идёт вайп или рестарт, он держит `.manager.lock`. Оборвавшийся запуск ничего не оставляет: блокировка снимается, когда процесс завершается.
+
+### Сообщения в Telegram не приходят
+
+Выполните `./manager.sh test-telegram` и поищите в логе `Telegram send error`. Проверьте токен и chat id в `.secrets.env` (у групп id отрицательный), что бот состоит в чате, `ENABLE_TELEGRAM="true"` и что `TELEGRAM_LOG_LEVEL` не скрывает это сообщение. `curl https://api.telegram.org/bot<TOKEN>/getMe` должен вернуть `"ok":true`.
+
+### Ограничения
+
+Один сервер на машину (скрипт находит его через `pgrep -x RustDedicated`), один `config.env`. Рассчитан на серверы с Oxide/uMod. Время везде местное по ВМ.
+
+## Участие в разработке
+
+Issues и pull request'ы приветствуются. Это боевой инструмент, поэтому, пожалуйста:
+
+- проверяйте изменения на настоящем Rust-сервере с LinuxGSM (или опишите, как проверяли);
+- перед отправкой выполняйте `bash -n manager.sh` и `shellcheck manager.sh`;
+- держите `config.env.example`, этот README, `README.md` и `CHANGELOG.md` в соответствии с кодом;
+- не используйте в примерах реальные имена хостов, IP-адреса, названия серверов, токены и chat id.
+
+## Лицензия
+
+[MIT](LICENSE).
+
+## Благодарности
+
+[LinuxGSM](https://linuxgsm.com/), [gorcon/rcon-cli](https://github.com/gorcon/rcon-cli), [Facepunch Studios](https://facepunch.com/) (Rust) и [uMod/Oxide](https://umod.org/).
