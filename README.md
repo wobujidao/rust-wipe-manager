@@ -250,7 +250,7 @@ Map only, blueprints kept. Off by default.
 | `MAPWIPE_ENABLED` | `false` | Run Map Wipes. |
 | `MAPWIPE_DAY` | `5` | Weekday, 1=Mon … 7=Sun. Not on the Full Wipe day (while `FULLWIPE_ENABLED` is `true`). |
 | `MAPWIPE_TIME` | `19:00` | When the countdown starts; the wipe follows `FULLWIPE_COUNTDOWN` later. Window: 1 hour. |
-| `MAPWIPE_INTERVAL_WEEKS` | `1` | Every N weeks, counted from the **last wipe of any kind** (age of the newest `*.map` file), so the forced Thursday wipe restarts the count. |
+| `MAPWIPE_INTERVAL_WEEKS` | `1` | Every N weeks, counted from the **last wipe of any kind** (age of the newest `*.map` file), so the forced Thursday wipe restarts the count. A scheduled map wipe is skipped only when the map is younger than `7·N − 5` days (2 days for weekly, 9 for bi-weekly): the Friday right after a Thursday wipe is skipped, a 6-day-old map is not. |
 | `MAPWIPE_MONTH_DAYS` | `""` | Only on these days of the month, `FROM-TO` (`16-22`) or a single day; empty = any. |
 | `MAPWIPE_OPEN_TIME` | `""` | Opening time after the wipe, see [Opening gate](#opening-gate). |
 

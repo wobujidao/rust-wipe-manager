@@ -676,6 +676,13 @@ last_map_unix() {
     echo "${newest%.*}"
 }
 
+# Minimum map age (whole days) for a scheduled map wipe: the interval minus 5 days of slack.
+# Weekly -> 2: skips only the day right after a global/manual wipe, never a 6-day-old map
+# (a server launched on a Saturday must still wipe on Friday). Bi-weekly -> 9.
+map_min_days() {
+    echo $(( MAPWIPE_INTERVAL_WEEKS * 7 - 5 ))
+}
+
 days_since_map_wipe() {
     local last
     last=$(last_map_unix)
@@ -780,7 +787,7 @@ next_wipe_unix() {
             dom=$(date -d "$day" +%-d)
             from=${MAPWIPE_MONTH_DAYS%-*}; to=${MAPWIPE_MONTH_DAYS#*-}
             if { [ -z "$MAPWIPE_MONTH_DAYS" ] || (( dom >= from && dom <= to )); } &&
-               { [ -z "$last" ] || (( ($(date -d "$day $MAPWIPE_TIME" +%s) - last) / 86400 >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); }; then
+               { [ -z "$last" ] || (( ($(date -d "$day $MAPWIPE_TIME" +%s) - last) / 86400 >= $(map_min_days) )); }; then
                 if [[ "$MAPWIPE_OPEN_TIME" =~ ^\+([0-9]+)$ ]]; then
                     ts=$(( $(date -d "$day $MAPWIPE_TIME" +%s) + FULLWIPE_COUNTDOWN + BASH_REMATCH[1] * 60 ))
                 elif [ -n "$MAPWIPE_OPEN_TIME" ]; then
@@ -837,7 +844,7 @@ mode_tick() {
         if due mapwipe "$(date -d "today $MAPWIPE_TIME" +%s)" 60; then
             local days
             days=$(days_since_map_wipe)
-            if (( days >= MAPWIPE_INTERVAL_WEEKS * 7 - 1 )); then
+            if (( days >= $(map_min_days) )); then
                 cleanup_logs
                 mode_wipe map true
                 exit 0

@@ -8,6 +8,13 @@ by date and are meant to be used when tagging.
 
 ## [Unreleased]
 
+### Fixed (2026-11-13)
+
+- A scheduled map wipe skipped a 6-day-old map: the minimum age was `7·N − 1` days, so a
+  server launched on a Saturday did not wipe on the next Friday. The minimum is now
+  `7·N − 5` days (`map_min_days`, 2 for weekly), which still skips the Friday right after
+  a Thursday wipe. The browser wipe timer uses the same rule.
+
 Work of 2026-11-07.
 
 ### Added
