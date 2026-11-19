@@ -36,6 +36,7 @@ source "$SECRETS_FILE"
 : "${WATCHDOG_GRACE:=1800}"
 : "${WATCHDOG_HANG_CHECKS:=5}"
 : "${WATCHDOG_MAX_RESTARTS:=3}"
+: "${WATCHDOG_SAVE_STALE:=900}"   # world save older than this = main loop stopped (saveinterval 300)
 : "${LOG_KEEP_DAYS:=30}"
 : "${LGSM_LOCK_DIR:=$(dirname "$LGSM_SCRIPT")/lgsm/lock}"
 : "${LGSM_SELFNAME:=$(basename "$LGSM_SCRIPT")}"
@@ -98,7 +99,9 @@ msg() {
             oxide_rollback_fail) echo "🚨 $SERVER_TAG: откат Oxide не помог, нужен человек!" ;;
             oxide_no_backup)   echo "🚨 $SERVER_TAG: Oxide не загрузился ($why), а копии Managed/ нет. Нужен человек!" ;;
             wd_crashed)        echo "💥 $SERVER_TAG: сервер упал, перезапускаю" ;;
-            wd_hung)           echo "🧊 $SERVER_TAG: сервер завис (RCON молчит $WATCHDOG_HANG_CHECKS проверки подряд), перезапускаю" ;;
+            wd_hung)           echo "🧊 $SERVER_TAG: сервер завис (RCON молчит $WATCHDOG_HANG_CHECKS проверки подряд и мир не сохраняется $((WATCHDOG_SAVE_STALE/60))+ мин), перезапускаю" ;;
+            wd_fatal)          echo "💥 $SERVER_TAG: сервер упал (в логе «Caught fatal signal»), процесс застрял — перезапускаю" ;;
+            wd_rcon_only)      echo "⚠️ $SERVER_TAG: RCON не отвечает, но мир сохраняется — сервер жив, НЕ перезапускаю" ;;
             wd_restarted)      echo "✅ $SERVER_TAG: сервер перезапущен сторожем" ;;
             wd_restart_fail)   echo "❌ $SERVER_TAG: сторож не смог запустить сервер" ;;
             wd_give_up)        echo "🚨 $SERVER_TAG: сервер падает слишком часто ($WATCHDOG_MAX_RESTARTS перезапуска за час). Сторож остановился, нужен человек!" ;;
@@ -146,7 +149,9 @@ msg() {
             oxide_rollback_fail) echo "🚨 $SERVER_TAG: Oxide rollback did not help. Manual intervention required!" ;;
             oxide_no_backup)   echo "🚨 $SERVER_TAG: Oxide did not load ($why) and there is no Managed/ backup. Manual intervention required!" ;;
             wd_crashed)        echo "💥 $SERVER_TAG: Server crashed, restarting" ;;
-            wd_hung)           echo "🧊 $SERVER_TAG: Server hung (RCON silent for $WATCHDOG_HANG_CHECKS checks in a row), restarting" ;;
+            wd_hung)           echo "🧊 $SERVER_TAG: Server hung (RCON silent for $WATCHDOG_HANG_CHECKS checks in a row and no world save for $((WATCHDOG_SAVE_STALE/60))+ min), restarting" ;;
+            wd_fatal)          echo "💥 $SERVER_TAG: Server crashed (\"Caught fatal signal\" in the log), process stuck, restarting" ;;
+            wd_rcon_only)      echo "⚠️ $SERVER_TAG: RCON is silent but the world keeps saving: server alive, NOT restarting" ;;
             wd_restarted)      echo "✅ $SERVER_TAG: Server restarted by the watchdog" ;;
             wd_restart_fail)   echo "❌ $SERVER_TAG: Watchdog could not start the server" ;;
             wd_give_up)        echo "🚨 $SERVER_TAG: Server keeps crashing ($WATCHDOG_MAX_RESTARTS restarts within an hour). Watchdog stopped, manual intervention required!" ;;
@@ -205,6 +210,28 @@ cleanup_logs() {
 
 is_server_running() {
     pgrep -x RustDedicated >/dev/null
+}
+
+# Seconds since the newest world save (*.sav), or a huge number if none. The main loop writes it
+# every server.saveinterval (300 s), so a fresh .sav means the game itself is running.
+world_save_age() {
+    local newest
+    newest=$(find "$SERVERFILES_DIR/server/$LGSM_SELFNAME" -maxdepth 1 -name '*.sav' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+    [ -z "$newest" ] && { echo 999999; return; }
+    echo $(( $(date +%s) - ${newest%.*} ))
+}
+
+# True when the current game log (LGSM rotates it on every start) records a native crash.
+# 2026-11-19: "corrupted size vs. prev_size" + "Caught fatal signal - signo:6" left the process
+# alive inside Unity's crash handler: pgrep saw it, RCON and saves were dead.
+server_fatal_logged() {
+    local glog age
+    glog="$(dirname "$LGSM_SCRIPT")/log/server/$LGSM_SELFNAME-game.log"
+    [ -f "$glog" ] || return 1
+    age=$(ps -o etimes= -C RustDedicated | sort -n | tail -1 | tr -d ' ')
+    # the log must belong to this process (written after it started)
+    (( $(stat -c %Y "$glog") >= $(date +%s) - ${age:-0} )) || return 1
+    grep -aq "Caught fatal signal" "$glog"
 }
 
 # FULLWIPE_LONDON_HOUR on the VM's local date. Not TZ=Europe/London "today": east of London the
@@ -875,11 +902,25 @@ mode_watchdog() {
     local why=""
     if ! is_server_running; then
         why="crashed"
+    elif server_fatal_logged; then
+        why="fatal"                                    # no grace: the process is already dead inside
     else
         local age
         age=$(ps -o etimes= -C RustDedicated | sort -n | tail -1 | tr -d ' ')
         if (( ${age:-0} < WATCHDOG_GRACE )) || rcon_command serverinfo >/dev/null 2>&1; then
-            rm -f "$STATE_DIR/hang" "$STATE_DIR/gave_up"
+            rm -f "$STATE_DIR/hang" "$STATE_DIR/gave_up" "$STATE_DIR/rcon_warned"
+            exit 0
+        fi
+        # RCON is silent. A real hang also stops the world saves; RCON alone is not worth kicking players.
+        local save_age
+        save_age=$(world_save_age)
+        if (( save_age < WATCHDOG_SAVE_STALE )); then
+            rm -f "$STATE_DIR/hang"
+            log "Watchdog: RCON not answering, but the world saved ${save_age}s ago: alive, not restarting"
+            if [ ! -f "$STATE_DIR/rcon_warned" ]; then
+                touch "$STATE_DIR/rcon_warned"
+                send_telegram "$(msg wd_rcon_only)" "error"
+            fi
             exit 0
         fi
         local n=$(( $(cat "$STATE_DIR/hang" 2>/dev/null || echo 0) + 1 ))
@@ -905,6 +946,8 @@ mode_watchdog() {
     log "Watchdog: server $why, restarting"
     if [[ "$why" == "hung" ]]; then
         send_telegram "$(msg wd_hung)" "error"
+    elif [[ "$why" == "fatal" ]]; then
+        send_telegram "$(msg wd_fatal)" "error"
     else
         send_telegram "$(msg wd_crashed)" "error"
     fi

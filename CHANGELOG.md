@@ -8,6 +8,18 @@ by date and are meant to be used when tagging.
 
 ## [Unreleased]
 
+### Fixed (2026-11-19)
+
+- The watchdog no longer waits out `WATCHDOG_GRACE` when the server has crashed natively
+  but its process is still alive: on Rust build 26709985 the server aborted with
+  `corrupted size vs. prev_size` / `Caught fatal signal - signo:6` and stayed inside Unity's
+  crash handler, so `pgrep` saw it while RCON and world saves were dead (one such crash
+  sat 37 minutes). A `Caught fatal signal` line in the current game log is now a crash and
+  restarts the server on the next tick.
+- A silent RCON alone no longer restarts the server. A hang now also needs the newest
+  world save to be older than `WATCHDOG_SAVE_STALE` (new, 900 s); RCON silent while the
+  world keeps saving sends one alert and leaves the players alone.
+
 ### Fixed (2026-11-13)
 
 - A scheduled map wipe skipped a 6-day-old map: the minimum age was `7·N − 1` days, so a

@@ -302,7 +302,8 @@ The one-time power-off flag has no setting: `touch ~/rust_server/.poweroff-once`
 |---|---|---|
 | `WATCHDOG_ENABLED` | `true` | Restart a crashed or hung server. |
 | `WATCHDOG_GRACE` | `1800` | A process younger than this is never called hung (map generation takes long). |
-| `WATCHDOG_HANG_CHECKS` | `5` | RCON silent this many checks in a row (one per minute) = hung. |
+| `WATCHDOG_HANG_CHECKS` | `5` | RCON silent this many checks in a row (one per minute) and no world save for `WATCHDOG_SAVE_STALE` = hung. |
+| `WATCHDOG_SAVE_STALE` | `900` | Seconds without a world save (`*.sav`) that, with a silent RCON, mean a hang. RCON silent while saves continue: alert, no restart. |
 | `WATCHDOG_MAX_RESTARTS` | `3` | Per hour. Beyond that the watchdog stops and alerts once. |
 
 ### Logs
@@ -458,7 +459,9 @@ flowchart TD
     L -->|"no: stopped on purpose"| NV["never restarted"]
     L -->|"yes"| P{"RustDedicated running?"}
     P -->|"no"| CR["crashed"]
-    P -->|"yes"| H{"older than WATCHDOG_GRACE and RCON silent WATCHDOG_HANG_CHECKS checks in a row?"}
+    P -->|"yes"| F{"game log has 'Caught fatal signal'?"}
+    F -->|"yes"| CR
+    F -->|"no"| H{"older than WATCHDOG_GRACE, RCON silent WATCHDOG_HANG_CHECKS checks in a row and no save for WATCHDOG_SAVE_STALE?"}
     H -->|"yes"| HU["hung"]
     H -->|"no"| OK["healthy"]
     CR --> LIM{"under WATCHDOG_MAX_RESTARTS this hour?"}
